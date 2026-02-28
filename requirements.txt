@@ -1,0 +1,28 @@
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Data / ETL
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.2.0
+Pillow>=9.0.0
+
+# Experiment tracking
+mlflow>=2.0.0
+
+# Config
+PyYAML>=6.0
+
+# Visualisation
+matplotlib>=3.7.0
+
+# Optional: GCP embedding storage
+# gcsfs>=2023.1.0
+# google-cloud-storage>=2.0.0
+
+# WSI reading
+openslide-python>=1.3.0
+
+# Optional: feature extraction backbone
+# timm>=0.9.0

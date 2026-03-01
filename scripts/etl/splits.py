@@ -90,6 +90,7 @@ def validate_splits(
     data_dir: str,
     embeddings_dir: str,
     slide_id_col: str = "case_id",
+    split_files: List[str] = None,
 ) -> List[Tuple[str, str]]:
     """Check every slide in the CSV splits has a corresponding embedding.
 
@@ -98,18 +99,23 @@ def validate_splits(
     'SR386_40X_HE_T001_01.zarr') before reporting a miss.
 
     Args:
-        data_dir:       Directory containing train/val/test CSV files.
+        data_dir:       Directory containing split CSV files.
         embeddings_dir: Root directory for embedding files.
         slide_id_col:   Slide identifier column name (default: 'case_id').
+        split_files:    List of CSV filenames to check. Defaults to
+                        ["train.csv", "val.csv", "test.csv"].
 
     Returns:
         List of (split_filename, slide_id) tuples for missing embeddings.
     """
+    if split_files is None:
+        split_files = ["train.csv", "val.csv", "test.csv"]
+
     data_dir = Path(data_dir)
     emb_dir  = Path(str(embeddings_dir).rstrip("/"))
     missing: List[Tuple[str, str]] = []
 
-    for split_file in ["train.csv", "val.csv", "test.csv"]:
+    for split_file in split_files:
         path = data_dir / split_file
         if not path.exists():
             print(f"WARNING: {split_file} not found in {data_dir}")

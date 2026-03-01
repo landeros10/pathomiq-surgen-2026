@@ -20,8 +20,8 @@ Work on the M4 Mac using the synthetic data pipeline. Goal: a clean, correct, te
 - [x] **Gap 4 — Official data splits** *(data integrity)*
   36 CSVs downloaded from [`CraigMyles/SurGen-Dataset`](https://github.com/CraigMyles/SurGen-Dataset) into `data/splits/`. SR386 MSI counts verified against Table 4: 255/84/84 slides, 20/6/6 dMMR. `config.yaml` updated to point at the correct filenames and `label_column: label`.
 
-- [ ] **Gap 5 — Commit `model_design.md`**
-  It exists but is untracked. Commit it — it's the single source of truth for architectural decisions.
+- [x] **Gap 5 — Commit `model_design.md`**
+  Already tracked since commit `5f9fd37`. Single source of truth for architectural decisions.
 
 ### Gate: before moving to Phase 1
 

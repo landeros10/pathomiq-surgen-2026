@@ -267,12 +267,19 @@ def main(
             model.load_state_dict(
                 torch.load(best_path, map_location=device, weights_only=True)
             )
-            mlflow.log_artifact(str(best_path))
+            model_info = mlflow.pytorch.log_model(
+                pytorch_model=model,
+                name="best_model",
+                step=best_epoch,
+            )
 
         _, test_auroc, test_probs, test_labels = evaluate(
             model, test_loader, criterion, device
         )
-        mlflow.log_metric("test_auroc", test_auroc)
+        mlflow.log_metric(
+            "test_auroc", test_auroc,
+            model_id=model_info.model_id if best_path.exists() else None,
+        )
         log_confusion_matrix(test_probs, test_labels, threshold=0.5, prefix="test")
 
         print(f"Test  AUROC: {test_auroc:.4f}")

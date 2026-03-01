@@ -102,6 +102,9 @@ cython_debug/
 .cursorindexingignore
 *.cursor-tutor
 
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+
 # ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
 .AppleDouble

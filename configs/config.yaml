@@ -22,7 +22,7 @@ data:
   val_split: "SR386_msi_validate.csv"
   test_split: "SR386_msi_test.csv"
   label_column: "label"             # 0 = MSS/pMMR, 1 = MSI/dMMR
-  slide_id_column: "slide_id"
+  slide_id_column: "case_id"
 
 # ── Model ──────────────────────────────────────────────────────────────────────
 model:

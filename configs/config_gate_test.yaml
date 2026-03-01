@@ -22,7 +22,7 @@ data:
   val_split: "val.csv"
   test_split: "test.csv"
   label_column: "label"             # 0 = MSS/pMMR, 1 = MSI/dMMR
-  slide_id_column: "slide_id"
+  slide_id_column: "case_id"
 
 # ── Model ──────────────────────────────────────────────────────────────────────
 model:

@@ -1,7 +1,7 @@
 """Lazy-loading MIL dataset for WSI patch embeddings.
 
 Supports two embedding formats, auto-detected from the path in embeddings_dir:
-  - Zarr  (.zarr) — Zenodo pre-extracted UNI embeddings; reads ['feats'] array
+  - Zarr  (.zarr) — Zenodo pre-extracted UNI embeddings; reads ['features'] array
                     of shape (N_patches, 1024) stored as one directory per slide.
   - PyTorch (.pt) — locally saved tensors of shape (N_patches, embedding_dim).
 
@@ -10,6 +10,7 @@ GCP (gs://) paths are supported for .pt files via gcsfs; set
 DataLoader(num_workers=0) when using GCS to avoid multiprocessing issues.
 """
 
+import re
 from pathlib import Path
 from typing import Tuple
 
@@ -74,15 +75,36 @@ class MILDataset(Dataset):
                 return self._load_gcs(pt)
             return torch.load(pt, map_location="cpu", weights_only=True)
 
+        # SR386 fallback: CSV IDs like 'SR386_40X_HE_T1' map to server Zarr
+        # filenames 'SR386_40X_HE_T001_01.zarr' (zero-padded, _01 suffix).
+        resolved = self._pad_sr386_id(slide_id)
+        if resolved != slide_id:
+            zarr_path = Path(f"{self.embeddings_dir}/{resolved}.zarr")
+            if zarr_path.exists():
+                return self._load_zarr(str(zarr_path))
+
         raise FileNotFoundError(
             f"No embedding found for slide '{slide_id}' in {self.embeddings_dir}. "
             f"Expected '{zarr_path}' or '{pt_path}'."
         )
 
+    @staticmethod
+    def _pad_sr386_id(slide_id: str) -> str:
+        """Map un-padded SR386 CSV IDs to zero-padded server Zarr filenames.
+
+        e.g. 'SR386_40X_HE_T1' → 'SR386_40X_HE_T001_01'
+             'SR386_40X_HE_T10' → 'SR386_40X_HE_T010_01'
+        Returns slide_id unchanged if it doesn't match the pattern.
+        """
+        m = re.match(r'^(.*_T)(\d{1,3})$', slide_id)
+        if m:
+            return f"{m.group(1)}{int(m.group(2)):03d}_01"
+        return slide_id
+
     def _load_zarr(self, path: str) -> torch.Tensor:
         """Load pre-extracted UNI embeddings from a Zenodo-format Zarr store.
 
-        The store must contain a 'feats' array of shape (N_patches, 1024).
+        The store must contain a 'features' array of shape (N_patches, 1024).
         """
         try:
             import zarr
@@ -92,7 +114,7 @@ class MILDataset(Dataset):
                 "Install with: pip install zarr"
             )
         store = zarr.open(path, mode="r")
-        return torch.from_numpy(store["feats"][:]).to(torch.float32)
+        return torch.from_numpy(store["features"][:]).to(torch.float32)
 
     def _load_gcs(self, gcs_path: str) -> torch.Tensor:
         """Load a .pt file directly from GCS without a local temp file."""

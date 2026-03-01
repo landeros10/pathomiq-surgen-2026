@@ -10,6 +10,7 @@ Typical usage:
     missing = validate_splits("data/", "embeddings/")
 """
 
+import re
 from pathlib import Path
 from typing import List, Tuple
 
@@ -67,20 +68,39 @@ def create_splits(
     return train, val, test
 
 
+def _embedding_exists(emb_dir: Path, slide_id: str) -> bool:
+    """Return True if a .pt or .zarr embedding exists for slide_id.
+
+    Also tries the SR386 zero-padding transform
+    (e.g. 'SR386_40X_HE_T1' → 'SR386_40X_HE_T001_01') as a fallback.
+    """
+    if (emb_dir / f"{slide_id}.pt").exists():
+        return True
+    if (emb_dir / f"{slide_id}.zarr").exists():
+        return True
+    m = re.match(r'^(.*_T)(\d{1,3})$', slide_id)
+    if m:
+        resolved = f"{m.group(1)}{int(m.group(2)):03d}_01"
+        if (emb_dir / f"{resolved}.zarr").exists():
+            return True
+    return False
+
+
 def validate_splits(
     data_dir: str,
     embeddings_dir: str,
-    slide_id_col: str = "slide_id",
+    slide_id_col: str = "case_id",
 ) -> List[Tuple[str, str]]:
-    """Check every slide in the CSV splits has a corresponding .pt embedding.
+    """Check every slide in the CSV splits has a corresponding embedding.
 
-    Prints a warning for each missing file and returns the full list so the
-    caller can decide how to handle failures.
+    Accepts both .pt and .zarr formats. SR386 un-padded IDs are resolved to
+    their zero-padded server filenames (e.g. 'SR386_40X_HE_T1' →
+    'SR386_40X_HE_T001_01.zarr') before reporting a miss.
 
     Args:
-        data_dir:      Directory containing train/val/test CSV files.
-        embeddings_dir: Root directory for .pt embedding files.
-        slide_id_col:  Slide identifier column name.
+        data_dir:       Directory containing train/val/test CSV files.
+        embeddings_dir: Root directory for embedding files.
+        slide_id_col:   Slide identifier column name (default: 'case_id').
 
     Returns:
         List of (split_filename, slide_id) tuples for missing embeddings.
@@ -95,7 +115,7 @@ def validate_splits(
             print(f"WARNING: {split_file} not found in {data_dir}")
             continue
         for slide_id in pd.read_csv(path)[slide_id_col]:
-            if not (emb_dir / f"{slide_id}.pt").exists():
+            if not _embedding_exists(emb_dir, slide_id):
                 missing.append((split_file, slide_id))
 
     if missing:

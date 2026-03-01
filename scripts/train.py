@@ -166,7 +166,7 @@ def main(
 
         best_auroc = -1.0
         no_improve = 0
-        patience   = tc.get("early_stopping_patience", 30)
+        patience   = tc.get("early_stopping_patience", 9999)
         best_path  = models_dir / "best_model.pt"
 
         for epoch in range(tc["epochs"]):

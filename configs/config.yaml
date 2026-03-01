@@ -15,12 +15,11 @@ paths:
 # ── Dataset ────────────────────────────────────────────────────────────────────
 data:
   cohorts:
-    - SR386     # 423 slides (255/84/84 train/val/test, 32 dMMR)
-    - SR1482    # 397 slides (235/81/81 train/val/test, 47 dMMR)
+    - SurGen    # SR386 + SR1482 combined (489/165/165 train/val/test, 79 dMMR)
   embedding_dim: 1024               # UNI patch embedding dimension
-  train_split: "SR386_msi_train.csv"
-  val_split: "SR386_msi_validate.csv"
-  test_split: "SR386_msi_test.csv"
+  train_split: "SurGen_msi_train.csv"
+  val_split: "SurGen_msi_validate.csv"
+  test_split: "SurGen_msi_test.csv"
   label_column: "label"             # 0 = MSS/pMMR, 1 = MSI/dMMR
   slide_id_column: "case_id"
 
@@ -41,9 +40,8 @@ training:
   lr: 1.0e-4
   batch_size: 1                     # one slide at a time (variable patch count)
   optimizer: "adam"
-  random_seed: 42
+  random_seed: 1                    # matches GitHub training script default
   save_every: 20                    # save checkpoint every N epochs
-  early_stopping_patience: 30       # stop if val AUROC doesn't improve
 
 # ── MLflow ─────────────────────────────────────────────────────────────────────
 mlflow:

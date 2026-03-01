@@ -185,6 +185,7 @@ def main(
 
     mlflow.set_tracking_uri(cfg["mlflow"]["tracking_uri"])
     mlflow.set_experiment(cfg["mlflow"]["experiment_name"])
+    mlflow.enable_system_metrics_logging()
 
     run_name = cfg["mlflow"].get("run_name")
     with mlflow.start_run(run_name=run_name):

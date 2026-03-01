@@ -135,7 +135,7 @@ def main(
         layer_norm_eps=mc["layer_norm_eps"],
     ).to(device)
 
-    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     tc        = cfg["training"]
     optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"])

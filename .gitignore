@@ -101,10 +101,16 @@ cython_debug/
 .cursor/
 .cursorignore
 .cursorindexingignore
+.cursorrules
 *.cursor-tutor
 
 # ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/
+CLAUDE.md
+.mcp.json
+
+# ── Private docs (GCP credentials, backend config, AI tool settings) ──────────
+docs/
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store

@@ -6,8 +6,8 @@
 # Switch embeddings_dir to "gs://your-bucket/surgen/embeddings/" for GCP.
 # All other paths are relative to the project root.
 paths:
-  embeddings_dir: "embeddings/"          # local; or gs://bucket/path/ for GCP
-  data_dir: "data/splits/"               # official split CSVs
+  embeddings_dir: "embeddings/synthetic/"   # synthetic gate-test embeddings
+  data_dir: "data/synthetic/"               # synthetic split CSVs
   models_dir: "models/"
   logs_dir: "logs/mlflow"
   results_dir: "results/"
@@ -18,9 +18,9 @@ data:
     - SR386     # 423 slides (255/84/84 train/val/test, 32 dMMR)
     - SR1482    # 397 slides (235/81/81 train/val/test, 47 dMMR)
   embedding_dim: 1024               # UNI patch embedding dimension
-  train_split: "SR386_msi_train.csv"
-  val_split: "SR386_msi_validate.csv"
-  test_split: "SR386_msi_test.csv"
+  train_split: "train.csv"
+  val_split: "val.csv"
+  test_split: "test.csv"
   label_column: "label"             # 0 = MSS/pMMR, 1 = MSI/dMMR
   slide_id_column: "slide_id"
 

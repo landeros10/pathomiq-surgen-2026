@@ -164,7 +164,7 @@ def main(
             "embeddings_dir":     embeddings_dir,
         })
 
-        best_auroc = 0.0
+        best_auroc = -1.0
         no_improve = 0
         patience   = tc.get("early_stopping_patience", 30)
         best_path  = models_dir / "best_model.pt"
@@ -212,7 +212,8 @@ def main(
         # Log final threshold metrics on the validation set
         log_metrics_at_thresholds(val_probs, val_labels, thresholds, prefix="val")
         mlflow.log_metric("best_val_auroc", best_auroc)
-        mlflow.log_artifact(str(best_path))
+        if best_path.exists():
+            mlflow.log_artifact(str(best_path))
 
     print(f"\nDone.  Best val AUROC: {best_auroc:.4f}  →  {best_path}")
 

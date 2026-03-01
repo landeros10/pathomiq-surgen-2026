@@ -32,6 +32,7 @@ model:
   num_heads: 2
   ffn_dim: 2048
   dropout: 0.15
+  layer_norm_eps: 1.0e-5            # Table 5 of the paper
   aggregation: "mean"               # mean pooling over patch tokens
 
 # ── Training ───────────────────────────────────────────────────────────────────

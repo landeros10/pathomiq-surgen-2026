@@ -50,15 +50,23 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     criterion: nn.Module,
     device: torch.device,
+    scaler=None,
 ) -> float:
     model.train()
     losses = []
+    amp_enabled = device.type == "cuda"
     for embeddings, labels, _ in loader:
         embeddings, labels = embeddings.to(device), labels.to(device)
         optimizer.zero_grad()
-        loss = criterion(model(embeddings), labels)
-        loss.backward()
-        optimizer.step()
+        with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
+            loss = criterion(model(embeddings), labels)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
         losses.append(loss.item())
     return float(np.mean(losses))
 
@@ -72,10 +80,12 @@ def evaluate(
     """Returns (mean_loss, auroc, probs, labels)."""
     model.eval()
     losses, probs, labels_out = [], [], []
+    amp_enabled = device.type == "cuda"
     with torch.no_grad():
         for embeddings, labels, _ in loader:
             embeddings, labels = embeddings.to(device), labels.to(device)
-            logits = model(embeddings)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
+                logits = model(embeddings)
             losses.append(criterion(logits, labels).item())
             probs.extend(torch.sigmoid(logits).cpu().tolist())
             labels_out.extend(labels.cpu().tolist())
@@ -122,7 +132,10 @@ def main(
         num_heads=mc["num_heads"],
         ffn_dim=mc["ffn_dim"],
         dropout=mc["dropout"],
+        layer_norm_eps=mc["layer_norm_eps"],
     ).to(device)
+
+    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
     tc        = cfg["training"]
     optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"])
@@ -143,9 +156,11 @@ def main(
             "num_heads":          mc["num_heads"],
             "ffn_dim":            mc["ffn_dim"],
             "dropout":            mc["dropout"],
+            "layer_norm_eps":     mc["layer_norm_eps"],
             "lr":                 tc["lr"],
             "epochs":             tc["epochs"],
             "device":             str(device),
+            "amp":                scaler is not None,
             "embeddings_dir":     embeddings_dir,
         })
 
@@ -155,7 +170,7 @@ def main(
         best_path  = models_dir / "best_model.pt"
 
         for epoch in range(tc["epochs"]):
-            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler)
             val_loss, val_auroc, val_probs, val_labels = evaluate(
                 model, val_loader, criterion, device
             )

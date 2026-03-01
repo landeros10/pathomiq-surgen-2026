@@ -22,8 +22,9 @@ class MILTransformer(nn.Module):
         hidden_dim:  Projected dimension fed into the transformer (512).
         num_layers:  Number of TransformerEncoder layers (2).
         num_heads:   Attention heads per layer (2).
-        ffn_dim:     Feedforward network dimension inside each layer (2048).
-        dropout:     Dropout probability applied inside the transformer (0.15).
+        ffn_dim:         Feedforward network dimension inside each layer (2048).
+        dropout:         Dropout probability applied inside the transformer (0.15).
+        layer_norm_eps:  Epsilon for LayerNorm (1e-5, per Table 5 of the paper).
     """
 
     def __init__(
@@ -34,6 +35,7 @@ class MILTransformer(nn.Module):
         num_heads: int = 2,
         ffn_dim: int = 2048,
         dropout: float = 0.15,
+        layer_norm_eps: float = 1e-5,
     ):
         super().__init__()
 
@@ -47,6 +49,7 @@ class MILTransformer(nn.Module):
             nhead=num_heads,
             dim_feedforward=ffn_dim,
             dropout=dropout,
+            layer_norm_eps=layer_norm_eps,
             batch_first=True,  # expects (batch, seq, features)
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)

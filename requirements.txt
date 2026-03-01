@@ -17,6 +17,9 @@ PyYAML>=6.0
 # Visualisation
 matplotlib>=3.7.0
 
+# Zarr embeddings (Zenodo pre-extracted UNI format)
+zarr>=2.16.0
+
 # Optional: GCP embedding storage
 # gcsfs>=2023.1.0
 # google-cloud-storage>=2.0.0

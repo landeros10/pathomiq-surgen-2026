@@ -17,8 +17,8 @@ Work on the M4 Mac using the synthetic data pipeline. Goal: a clean, correct, te
 - [x] **Gap 3 — AMP** *(CUDA only)*
   `torch.autocast(device_type='cuda', dtype=torch.float16)` in `train.py`, gated with `if device.type == 'cuda'`. AMP on MPS is a dead end — skip it. On GCP (V100) it activates automatically.
 
-- [ ] **Gap 4 — Official data splits** *(data integrity)*
-  Download the canonical CSV splits from [`CraigMyles/SurGen-Dataset`](https://github.com/CraigMyles/SurGen-Dataset) on GitHub. These are the 60:20:20 stratified splits from the paper. Commit them to `data/` — do not generate your own splits (results would be incomparable).
+- [x] **Gap 4 — Official data splits** *(data integrity)*
+  36 CSVs downloaded from [`CraigMyles/SurGen-Dataset`](https://github.com/CraigMyles/SurGen-Dataset) into `data/splits/`. SR386 MSI counts verified against Table 4: 255/84/84 slides, 20/6/6 dMMR. `config.yaml` updated to point at the correct filenames and `label_column: label`.
 
 - [ ] **Gap 5 — Commit `model_design.md`**
   It exists but is untracked. Commit it — it's the single source of truth for architectural decisions.
@@ -139,7 +139,7 @@ Every training run must be 100% determined by `config.yaml` + the git commit. No
 ### Pre-launch Checklist
 
 - [ ] Config matches Table 5 exactly: `d_model=512`, `n_layers=2`, `n_heads=2`, `d_ff=2048`, `dropout=0.15`, `layer_norm_eps=1e-5`, `lr=1e-4`, `epochs=200`, `batch_size=1`, `BCEWithLogitsLoss`
-- [ ] Splits are the official paper CSVs (not regenerated)
+- [x] Splits are the official paper CSVs (not regenerated) — `data/splits/SR386_msi_{train,validate,test}.csv`
 - [ ] Embeddings are the Zenodo pre-extracted UNI Zarr files (not re-extracted locally)
 - [ ] Git commit is clean and logged to MLflow
 - [ ] AMP enabled (CUDA auto-activates on V100)

@@ -7,7 +7,7 @@
 # All other paths are relative to the project root.
 paths:
   embeddings_dir: "embeddings/"          # local; or gs://bucket/path/ for GCP
-  data_dir: "data/"                       # CSV splits directory
+  data_dir: "data/splits/"               # official split CSVs
   models_dir: "models/"
   logs_dir: "logs/mlflow"
   results_dir: "results/"
@@ -15,13 +15,13 @@ paths:
 # ── Dataset ────────────────────────────────────────────────────────────────────
 data:
   cohorts:
-    - SR386     # 427 slides
-    - SR1482    # 593 slides
+    - SR386     # 423 slides (255/84/84 train/val/test, 32 dMMR)
+    - SR1482    # 397 slides (235/81/81 train/val/test, 47 dMMR)
   embedding_dim: 1024               # UNI patch embedding dimension
-  train_split: "train.csv"
-  val_split: "val.csv"
-  test_split: "test.csv"
-  label_column: "mmr_status"        # 0 = MSS/pMMR, 1 = MSI/dMMR
+  train_split: "SR386_msi_train.csv"
+  val_split: "SR386_msi_validate.csv"
+  test_split: "SR386_msi_test.csv"
+  label_column: "label"             # 0 = MSS/pMMR, 1 = MSI/dMMR
   slide_id_column: "slide_id"
 
 # ── Model ──────────────────────────────────────────────────────────────────────
@@ -41,6 +41,7 @@ training:
   lr: 1.0e-4
   batch_size: 1                     # one slide at a time (variable patch count)
   optimizer: "adam"
+  random_seed: 42
   save_every: 20                    # save checkpoint every N epochs
   early_stopping_patience: 30       # stop if val AUROC doesn't improve
 

@@ -1,6 +1,7 @@
 # ── Project-specific ──────────────────────────────────────────────────────────
 /embeddings/
 /models/
+/data/synthetic/
 /logs/
 surgen-env/
 mlflow.db

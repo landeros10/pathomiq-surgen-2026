@@ -62,9 +62,9 @@ def generate_synthetic_data(
 
     # Build metadata frame and split 60 : 20 : 20
     df = pd.DataFrame({
-        "slide_id":   slide_ids,
-        "mmr_status": labels,
-        "cohort":     "SYNTHETIC",
+        "case_id":  slide_ids,
+        "slide_id": slide_ids,
+        "label":    labels,
     })
 
     n_train = round(0.6 * num_slides)

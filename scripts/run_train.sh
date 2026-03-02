@@ -4,6 +4,7 @@
 # Usage:
 #   ./scripts/run_train.sh                          # use config defaults
 #   ./scripts/run_train.sh --run-name my-run        # override mlflow run name
+#   ./scripts/run_train.sh --run-suffix 2           # append -2 to config run name
 #   ./scripts/run_train.sh --config configs/other.yaml --run-name my-run
 #
 # Output is streamed to logs/train.log and tailed automatically.

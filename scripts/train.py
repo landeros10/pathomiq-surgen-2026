@@ -130,6 +130,7 @@ def main(
     data_dir_override: str = None,
     emb_dir_override: str = None,
     run_name_override: str = None,
+    run_suffix: str = None,
 ) -> None:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -189,6 +190,8 @@ def main(
     mlflow.enable_system_metrics_logging()
 
     run_name = run_name_override or cfg["mlflow"].get("run_name")
+    if run_suffix is not None:
+        run_name = f"{run_name}-{run_suffix}"
     with mlflow.start_run(run_name=run_name):
         # ── Full config + runtime-derived params ──────────────────────────────
         mlflow.log_params(_flatten_dict(cfg))
@@ -294,5 +297,6 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir",        default=None, help="Override data_dir from config")
     parser.add_argument("--embeddings-dir",  default=None, help="Override embeddings_dir from config")
     parser.add_argument("--run-name",         default=None, help="Override mlflow run_name from config")
+    parser.add_argument("--run-suffix",       default=None, help="Append -{suffix} to the run name")
     args = parser.parse_args()
-    main(args.config, args.data_dir, args.embeddings_dir, args.run_name)
+    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix)

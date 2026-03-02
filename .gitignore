@@ -1,4 +1,6 @@
 # ── Project-specific ──────────────────────────────────────────────────────────
+/scripts/gcp_workspace.sh
+/scripts/mlflow_local.sh
 /embeddings/
 /models/
 /data/synthetic/

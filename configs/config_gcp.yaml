@@ -29,7 +29,7 @@ model:
   aggregation: "mean"
 
 training:
-  epochs: 25
+  epochs: 100
   lr: 1.0e-4
   batch_size: 1
   optimizer: "adam"
@@ -39,7 +39,7 @@ training:
 mlflow:
   experiment_name: "mmr-prediction-baseline"
   tracking_uri: "sqlite:///mlflow.db"
-  run_name: "mmr-uni-mean-bce-s1-baseline"
+  run_name: "mmr-uni-surgen-mean-bce-s1-baseline"
 
 evaluation:
   thresholds: [0.0119, 0.25, 0.50, 0.75]

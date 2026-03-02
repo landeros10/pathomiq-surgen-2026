@@ -139,6 +139,7 @@ def main(
     run_name_override: str = None,
     run_suffix: str = None,
     max_epochs: int = None,
+    patience_override: int = None,
 ) -> None:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -190,7 +191,10 @@ def main(
     lr_scheduler_type = tc.get("lr_scheduler", "none")
     class_weighting   = tc.get("class_weighting", False)
     accum_steps       = tc.get("grad_accum_steps", 1)
-    early_stopping_patience = tc.get("early_stopping_patience", 0)
+    early_stopping_patience = (
+        patience_override if patience_override is not None
+        else tc.get("early_stopping_patience", 0)
+    )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"])
 
@@ -349,5 +353,6 @@ if __name__ == "__main__":
     parser.add_argument("--run-name",         default=None, help="Override mlflow run_name from config")
     parser.add_argument("--run-suffix",       default=None, help="Append -{suffix} to the run name")
     parser.add_argument("--max-epochs",       type=int, default=None, help="Cap training epochs (for preflight/debug)")
+    parser.add_argument("--patience",         type=int, default=None, help="Override early_stopping_patience from config")
     args = parser.parse_args()
-    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs)
+    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs, args.patience)

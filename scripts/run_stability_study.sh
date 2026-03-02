@@ -53,7 +53,7 @@ for i in "${!CONFIGS[@]}"; do
 
     start_ts=$(date +%s)
 
-    nohup python3 scripts/train.py --config "$cfg" \
+    nohup python3 scripts/train.py --config "$cfg" --run-suffix round_1 \
         > "$log" 2>&1 &
     pid=$!
     echo "  PID: ${pid}"

@@ -1,7 +1,8 @@
-# SurGen — paper reproduction config (Table 5)
+# Phase 4 stability study — class-weighted loss + gradient accumulation
+# A=off  B=on  C=on
 
 paths:
-  embeddings_dir: "embeddings/"
+  embeddings_dir: "/mnt/data-surgen/embeddings/"
   data_dir: "data/splits/"
   models_dir: "models/"
   logs_dir: "logs/mlflow"
@@ -28,19 +29,21 @@ model:
   aggregation: "mean"
 
 training:
-  epochs: 200
+  epochs: 25
+  early_stopping_patience: 10
   lr: 1.0e-4
   batch_size: 1
   optimizer: "adam"
   random_seed: 1
-  save_every: 20
-  lr_scheduler: "none"       # "cosine" | "none"
-  class_weighting: false     # true | false
-  grad_accum_steps: 1        # 1 = no accumulation (Phase 3 behavior)
+  save_every: 25
+  lr_scheduler: "none"
+  class_weighting: true
+  grad_accum_steps: 8
 
 mlflow:
-  experiment_name: "mmr-prediction-baseline"
+  experiment_name: "mmr-surgen-stability"
   tracking_uri: "sqlite:///mlflow.db"
+  run_name: "mmr-surgen-s1-weighted-accum"
 
 evaluation:
   thresholds: [0.0119, 0.25, 0.50, 0.75]

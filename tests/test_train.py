@@ -43,6 +43,7 @@ def synthetic_run(tmp_path):
         "data": {
             "train_split":    "train.csv",
             "val_split":      "val.csv",
+            "test_split":     "test.csv",
             "label_column":   "label",
             "slide_id_column": "case_id",
         },
@@ -93,3 +94,16 @@ class TestTrainSmoke:
         mlflow.set_tracking_uri(f"sqlite:///{tmp_path}/mlflow.db")
         runs = mlflow.search_runs(experiment_names=["test-smoke"])
         assert len(runs) >= 1
+
+    def test_grad_accum_steps(self, synthetic_run):
+        """Train with grad_accum_steps=4 — exercises the non-trivial accumulation loop."""
+        from scripts.train import main
+        cfg_path, tmp_path = synthetic_run
+        # Patch config to use grad_accum_steps=4
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["training"]["grad_accum_steps"] = 4
+        with open(cfg_path, "w") as f:
+            yaml.dump(cfg, f)
+        main(str(cfg_path))
+        assert (tmp_path / "models" / "best_model.pt").exists()

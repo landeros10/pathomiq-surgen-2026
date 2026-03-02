@@ -44,6 +44,9 @@ training:
   random_seed: 42
   save_every: 5
   early_stopping_patience: 10
+  lr_scheduler: "none"              # "cosine" | "none"
+  class_weighting: false            # true | false
+  grad_accum_steps: 1               # 1 = no accumulation (Phase 3 behavior)
 
 # ── MLflow ─────────────────────────────────────────────────────────────────────
 mlflow:

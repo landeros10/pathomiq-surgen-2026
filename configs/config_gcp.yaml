@@ -35,6 +35,9 @@ training:
   optimizer: "adam"
   random_seed: 1
   save_every: 20
+  lr_scheduler: "none"       # "cosine" | "none"
+  class_weighting: false     # true | false
+  grad_accum_steps: 1        # 1 = no accumulation (Phase 3 behavior)
 
 mlflow:
   experiment_name: "mmr-prediction-baseline"

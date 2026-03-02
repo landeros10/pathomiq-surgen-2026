@@ -21,6 +21,7 @@ from pathlib import Path
 
 import mlflow
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import yaml
@@ -76,27 +77,33 @@ def train_one_epoch(
     criterion: nn.Module,
     device: torch.device,
     scaler=None,
+    accum_steps: int = 1,
 ) -> tuple:
     """Returns (mean_loss, auroc, probs, labels)."""
     model.train()
     losses, probs, labels_out = [], [], []
     amp_enabled = device.type == "cuda"
-    for embeddings, labels, _ in loader:
+    optimizer.zero_grad()
+    for step, (embeddings, labels, _) in enumerate(loader):
         embeddings, labels = embeddings.to(device), labels.to(device)
-        optimizer.zero_grad()
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
             logits = model(embeddings)
-            loss = criterion(logits, labels)
+            loss = criterion(logits, labels) / accum_steps
         if scaler is not None:
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
         else:
             loss.backward()
-            optimizer.step()
-        losses.append(loss.item())
+        losses.append(loss.item() * accum_steps)  # log unscaled loss
         probs.extend(torch.sigmoid(logits.detach()).cpu().tolist())
         labels_out.extend(labels.cpu().tolist())
+        is_last = (step + 1) == len(loader)
+        if (step + 1) % accum_steps == 0 or is_last:
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
     auroc = roc_auc_score(labels_out, probs) if len(set(labels_out)) > 1 else 0.0
     return float(np.mean(losses)), float(auroc), probs, labels_out
 
@@ -131,6 +138,7 @@ def main(
     emb_dir_override: str = None,
     run_name_override: str = None,
     run_suffix: str = None,
+    max_epochs: int = None,
 ) -> None:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -178,8 +186,32 @@ def main(
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     tc        = cfg["training"]
+    n_epochs  = min(tc["epochs"], max_epochs) if max_epochs else tc["epochs"]
+    lr_scheduler_type = tc.get("lr_scheduler", "none")
+    class_weighting   = tc.get("class_weighting", False)
+    accum_steps       = tc.get("grad_accum_steps", 1)
+    early_stopping_patience = tc.get("early_stopping_patience", 0)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"])
-    criterion = nn.BCEWithLogitsLoss()
+
+    if class_weighting:
+        train_csv = os.path.join(data_dir, cfg["data"]["train_split"])
+        _df = pd.read_csv(train_csv)
+        _n_pos = int(_df[cfg["data"]["label_column"]].sum())
+        _n_neg = len(_df) - _n_pos
+        pos_weight = torch.tensor([_n_neg / _n_pos], dtype=torch.float32).to(device)
+    else:
+        pos_weight = None
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    if lr_scheduler_type == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=n_epochs
+        )
+    else:
+        scheduler = None
+
     thresholds = cfg["evaluation"]["thresholds"]
 
     models_dir = Path(cfg["paths"]["models_dir"])
@@ -196,12 +228,18 @@ def main(
         # ── Full config + runtime-derived params ──────────────────────────────
         mlflow.log_params(_flatten_dict(cfg))
         extra = {
-            "loss_fn":      "BCEWithLogitsLoss",
-            "aggregator":   mc.get("aggregation", "mean"),
-            "arch_variant": "MILTransformer",
-            "device":       str(device),
-            "amp":          scaler is not None,
+            "loss_fn":                   "BCEWithLogitsLoss(weighted)" if class_weighting else "BCEWithLogitsLoss",
+            "aggregator":                mc.get("aggregation", "mean"),
+            "arch_variant":              "MILTransformer",
+            "device":                    str(device),
+            "amp":                       scaler is not None,
+            "lr_scheduler":              lr_scheduler_type,
+            "class_weighting":           class_weighting,
+            "grad_accum_steps":          accum_steps,
+            "early_stopping_patience":   early_stopping_patience,
         }
+        if class_weighting:
+            extra["pos_weight"] = round(_n_neg / _n_pos, 4)
         if run_name is not None:
             extra["run_name"] = run_name
         mlflow.log_params(extra)
@@ -213,13 +251,14 @@ def main(
         best_auroc = -1.0
         best_epoch = -1
         no_improve = 0
-        patience   = tc.get("early_stopping_patience", 9999)
+        # 0 = disabled; treat as "never trigger" sentinel
+        patience   = early_stopping_patience if early_stopping_patience > 0 else 10 ** 9
         best_path  = models_dir / "best_model.pt"
 
         val_probs, val_labels = [], []
-        for epoch in range(tc["epochs"]):
+        for epoch in range(n_epochs):
             train_loss, train_auroc, _, _ = train_one_epoch(
-                model, train_loader, optimizer, criterion, device, scaler
+                model, train_loader, optimizer, criterion, device, scaler, accum_steps
             )
             val_loss, val_auroc, val_probs, val_labels = evaluate(
                 model, val_loader, criterion, device
@@ -236,21 +275,30 @@ def main(
             )
 
             print(
-                f"Epoch {epoch+1:>3}/{tc['epochs']}  "
+                f"Epoch {epoch+1:>3}/{n_epochs}  "
                 f"train_loss={train_loss:.4f}  train_auroc={train_auroc:.4f}  "
                 f"val_loss={val_loss:.4f}  val_auroc={val_auroc:.4f}"
             )
 
+            if scheduler is not None:
+                scheduler.step()
+
             # Periodic checkpoint
             if (epoch + 1) % tc.get("save_every", 20) == 0:
-                torch.save(model.state_dict(), models_dir / f"epoch_{epoch+1:04d}.pt")
+                ckpt = {"model": model.state_dict()}
+                if scheduler is not None:
+                    ckpt["scheduler"] = scheduler.state_dict()
+                torch.save(ckpt, models_dir / f"epoch_{epoch+1:04d}.pt")
 
             # Best-model checkpoint
             if val_auroc > best_auroc:
                 best_auroc = val_auroc
                 best_epoch = epoch + 1
                 no_improve = 0
-                torch.save(model.state_dict(), best_path)
+                ckpt = {"model": model.state_dict()}
+                if scheduler is not None:
+                    ckpt["scheduler"] = scheduler.state_dict()
+                torch.save(ckpt, best_path)
             else:
                 no_improve += 1
                 if no_improve >= patience:
@@ -268,9 +316,11 @@ def main(
 
         # ── Test set evaluation ───────────────────────────────────────────────
         if best_path.exists():
-            model.load_state_dict(
-                torch.load(best_path, map_location=device, weights_only=True)
-            )
+            ckpt = torch.load(best_path, map_location=device, weights_only=True)
+            if isinstance(ckpt, dict) and "model" in ckpt:
+                model.load_state_dict(ckpt["model"])
+            else:
+                model.load_state_dict(ckpt)  # backward compat with pre-Phase-4 checkpoints
             model_info = mlflow.pytorch.log_model(
                 pytorch_model=model,
                 name="best_model",
@@ -298,5 +348,6 @@ if __name__ == "__main__":
     parser.add_argument("--embeddings-dir",  default=None, help="Override embeddings_dir from config")
     parser.add_argument("--run-name",         default=None, help="Override mlflow run_name from config")
     parser.add_argument("--run-suffix",       default=None, help="Append -{suffix} to the run name")
+    parser.add_argument("--max-epochs",       type=int, default=None, help="Cap training epochs (for preflight/debug)")
     args = parser.parse_args()
-    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix)
+    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs)

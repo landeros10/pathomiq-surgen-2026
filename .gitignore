@@ -9,8 +9,7 @@ surgen-env/
 mlflow.db
 /mlruns/
 docs/GCP_setup.md     # contains server credentials — never commit
-reports/*.html
-reports/*.png
+reports/
 
 # ── Python (GitHub template) ──────────────────────────────────────────────────
 __pycache__/

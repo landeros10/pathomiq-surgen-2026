@@ -34,7 +34,7 @@ TOTAL=${#CONFIGS[@]}
 PASS=0
 FAIL=0
 
-echo "Round 1 — 10 conditions  lr=5e-5  epochs=25  patience=5"
+echo "Round 1 — 10 conditions  lr=1e-5  epochs=25  patience=10"
 echo "${TOTAL} configs to run sequentially"
 echo "────────────────────────────────────────"
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Round 1 unified launcher — 2×4 grid
+# Round 1 unified launcher — 10 conditions
 #
-# Variables:  cosine schedule (on/off) × accum steps (1/4/8/16)
+# Grid:       cosine (on/off) × accum (1/4/8/16)  [8 conditions]
+# Extra:      AdamW+wd, dropout=0.3               [2 conditions, no cosine, accum=1]
 # Settings:   lr=5e-5, epochs=25, patience=5, T_max=100 (cosine configs)
 #
 # Usage (on GCP):
@@ -13,23 +14,27 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 mkdir -p logs/stability
 
-# No cosine
 CONFIGS=(
+    # No cosine — accum sweep
     configs/studies/config_surgen_none.yaml           # accum=1
     configs/studies/config_surgen_accum4.yaml         # accum=4
     configs/studies/config_surgen_accum.yaml          # accum=8
     configs/studies/config_surgen_accum16.yaml        # accum=16
+    # Cosine+warmup — accum sweep
     configs/studies/config_surgen_cosine.yaml         # cosine, accum=1
     configs/studies/config_surgen_cosine_accum4.yaml  # cosine, accum=4
     configs/studies/config_surgen_cosine_accum.yaml   # cosine, accum=8
     configs/studies/config_surgen_s2_accum16.yaml     # cosine, accum=16
+    # Regularization quick wins (no cosine, accum=1 baseline)
+    configs/studies/config_surgen_adamw.yaml          # AdamW + weight_decay=1e-4
+    configs/studies/config_surgen_dropout3.yaml       # dropout=0.3
 )
 
 TOTAL=${#CONFIGS[@]}
 PASS=0
 FAIL=0
 
-echo "Round 1 — cosine (on/off) × accum (1/4/8/16)  lr=5e-5  epochs=25  patience=5"
+echo "Round 1 — 10 conditions  lr=5e-5  epochs=25  patience=5"
 echo "${TOTAL} configs to run sequentially"
 echo "────────────────────────────────────────"
 

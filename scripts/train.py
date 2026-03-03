@@ -196,7 +196,12 @@ def main(
         else tc.get("early_stopping_patience", 0)
     )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"])
+    weight_decay = tc.get("weight_decay", 0.0)
+    opt_type = tc.get("optimizer", "adam").lower()
+    if opt_type == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=tc["lr"], weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"], weight_decay=weight_decay)
 
     if class_weighting:
         train_csv = os.path.join(data_dir, cfg["data"]["train_split"])

@@ -30,13 +30,14 @@ model:
 
 training:
   epochs: 25
-  early_stopping_patience: 10
+  early_stopping_patience: 5
   lr: 1.0e-4
   batch_size: 1
   optimizer: "adam"
   random_seed: 1
   save_every: 25
   lr_scheduler: "cosine"
+  lr_scheduler_T_max: 100
   class_weighting: true
   grad_accum_steps: 8
 

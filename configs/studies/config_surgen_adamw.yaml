@@ -29,8 +29,8 @@ model:
 
 training:
   epochs: 25
-  early_stopping_patience: 5
-  lr: 5.0e-5
+  early_stopping_patience: 10
+  lr: 1.0e-5
   weight_decay: 1.0e-4
   batch_size: 1
   optimizer: "adamw"

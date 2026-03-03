@@ -30,8 +30,8 @@ model:
 
 training:
   epochs: 25
-  early_stopping_patience: 5
-  lr: 5.0e-5
+  early_stopping_patience: 10
+  lr: 1.0e-5
   batch_size: 1
   optimizer: "adam"
   random_seed: 1

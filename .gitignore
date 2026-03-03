@@ -10,6 +10,7 @@ mlflow.db
 /mlruns/
 docs/GCP_setup.md     # contains server credentials — never commit
 reports/
+results/
 
 # ── Python (GitHub template) ──────────────────────────────────────────────────
 __pycache__/

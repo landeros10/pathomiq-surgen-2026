@@ -209,10 +209,23 @@ def main(
 
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
+    lr_warmup_epochs = tc.get("lr_scheduler_warmup_epochs", 0)
+    lr_eta_min       = tc.get("lr_scheduler_eta_min", 0.0)
+    lr_T_max         = tc.get("lr_scheduler_T_max", max(1, n_epochs - lr_warmup_epochs))
+
     if lr_scheduler_type == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=n_epochs
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=lr_T_max, eta_min=lr_eta_min
         )
+        if lr_warmup_epochs > 0:
+            warmup_sched = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1e-8, end_factor=1.0, total_iters=lr_warmup_epochs
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[lr_warmup_epochs]
+            )
+        else:
+            scheduler = cosine_sched
     else:
         scheduler = None
 
@@ -238,6 +251,9 @@ def main(
             "device":                    str(device),
             "amp":                       scaler is not None,
             "lr_scheduler":              lr_scheduler_type,
+            "lr_warmup_epochs":          lr_warmup_epochs,
+            "lr_eta_min":                lr_eta_min,
+            "lr_T_max":                  lr_T_max,
             "class_weighting":           class_weighting,
             "grad_accum_steps":          accum_steps,
             "early_stopping_patience":   early_stopping_patience,
@@ -254,6 +270,8 @@ def main(
 
         best_auroc = -1.0
         best_epoch = -1
+        best_val_probs: list = []
+        best_val_labels: list = []
         no_improve = 0
         # 0 = disabled; treat as "never trigger" sentinel
         patience   = early_stopping_patience if early_stopping_patience > 0 else 10 ** 9
@@ -298,6 +316,8 @@ def main(
             if val_auroc > best_auroc:
                 best_auroc = val_auroc
                 best_epoch = epoch + 1
+                best_val_probs  = list(val_probs)
+                best_val_labels = list(val_labels)
                 no_improve = 0
                 ckpt = {"model": model.state_dict()}
                 if scheduler is not None:
@@ -316,6 +336,7 @@ def main(
         log_metrics_at_thresholds(val_probs, val_labels, thresholds, prefix="val")
         mlflow.log_metric("best_val_auroc", best_auroc)
         mlflow.log_metric("best_epoch", best_epoch)
+        log_metrics_at_thresholds(best_val_probs, best_val_labels, thresholds, prefix="best_val", step=best_epoch)
         log_confusion_matrix(val_probs, val_labels, threshold=0.5, prefix="val")
 
         # ── Test set evaluation ───────────────────────────────────────────────

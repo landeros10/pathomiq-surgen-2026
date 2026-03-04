@@ -34,9 +34,10 @@ fi
 CONFIGS=()
 STEMS=()
 for run_name in "$@"; do
-    # Strip leading prefix and trailing -round_N suffix
+    # Strip leading prefix and trailing -round_N suffix, then normalize hyphens to underscores
     condition="${run_name#mmr-surgen-s1-}"
     condition="${condition%-round_*}"
+    condition="${condition//-/_}"
     cfg="configs/studies/config_surgen_${condition}.yaml"
     if [ ! -f "$cfg" ]; then
         echo "ERROR: config not found for run '${run_name}' → expected '${cfg}'"

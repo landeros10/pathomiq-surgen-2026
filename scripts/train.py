@@ -188,7 +188,7 @@ def main(
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     tc        = cfg["training"]
-    n_epochs  = min(tc["epochs"], max_epochs) if max_epochs else tc["epochs"]
+    n_epochs  = max_epochs if max_epochs is not None else tc["epochs"]
     lr_scheduler_type = tc.get("lr_scheduler", "none")
     class_weighting   = tc.get("class_weighting", False)
     accum_steps       = tc.get("grad_accum_steps", 1)

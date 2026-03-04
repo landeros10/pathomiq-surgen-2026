@@ -34,13 +34,10 @@ fi
 CONFIGS=()
 STEMS=()
 for run_name in "$@"; do
-    # Strip leading prefix and trailing -round_N suffix, then normalize hyphens to underscores
-    condition="${run_name#mmr-surgen-s1-}"
-    condition="${condition%-round_*}"
-    condition="${condition//-/_}"
-    cfg="configs/studies/config_surgen_${condition}.yaml"
-    if [ ! -f "$cfg" ]; then
-        echo "ERROR: config not found for run '${run_name}' → expected '${cfg}'"
+    # Find config whose mlflow run_name matches (handles filename/run_name mismatches)
+    cfg=$(grep -rl "run_name: \"${run_name}\"" configs/studies/ 2>/dev/null | head -1)
+    if [ -z "$cfg" ]; then
+        echo "ERROR: no config found with run_name '${run_name}' in configs/studies/"
         exit 1
     fi
     CONFIGS+=("$cfg")

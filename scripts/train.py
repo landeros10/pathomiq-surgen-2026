@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.etl.dataset import MILDataset
 from scripts.models.mil_transformer import MILTransformer
+from scripts.utils.metrics import compute_auprc, metrics_at_threshold
 from scripts.utils.mlflow_utils import log_confusion_matrix, log_metrics_at_thresholds
 
 
@@ -284,19 +285,32 @@ def main(
 
         val_probs, val_labels = [], []
         for epoch in range(n_epochs):
-            train_loss, train_auroc, _, _ = train_one_epoch(
+            train_loss, train_auroc, train_probs, train_labels = train_one_epoch(
                 model, train_loader, optimizer, criterion, device, scaler, accum_steps
             )
             val_loss, val_auroc, val_probs, val_labels = evaluate(
                 model, val_loader, criterion, device
             )
 
+            train_m     = metrics_at_threshold(train_labels, train_probs, 0.5)
+            train_auprc = compute_auprc(train_labels, train_probs)
+            val_m       = metrics_at_threshold(val_labels, val_probs, 0.5)
+            val_auprc   = compute_auprc(val_labels, val_probs)
+
             mlflow.log_metrics(
                 {
-                    "train_loss":  train_loss,
-                    "train_auroc": train_auroc,
-                    "val_loss":    val_loss,
-                    "val_auroc":   val_auroc,
+                    "train_loss":        train_loss,
+                    "train_auroc":       train_auroc,
+                    "train_auprc":       train_auprc,
+                    "train_f1":          train_m["f1"],
+                    "train_sensitivity": train_m["recall"],
+                    "train_specificity": train_m["specificity"],
+                    "val_loss":          val_loss,
+                    "val_auroc":         val_auroc,
+                    "val_auprc":         val_auprc,
+                    "val_f1":            val_m["f1"],
+                    "val_sensitivity":   val_m["recall"],
+                    "val_specificity":   val_m["specificity"],
                 },
                 step=epoch,
             )
@@ -304,7 +318,8 @@ def main(
             print(
                 f"Epoch {epoch+1:>3}/{n_epochs}  "
                 f"train_loss={train_loss:.4f}  train_auroc={train_auroc:.4f}  "
-                f"val_loss={val_loss:.4f}  val_auroc={val_auroc:.4f}"
+                f"val_loss={val_loss:.4f}  val_auroc={val_auroc:.4f}  "
+                f"val_f1={val_m['f1']:.4f}  val_sens={val_m['recall']:.4f}  val_spec={val_m['specificity']:.4f}"
             )
 
             if scheduler is not None:

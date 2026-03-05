@@ -30,8 +30,8 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.etl.dataset import MILDataset
-from scripts.models.mil_transformer import MILTransformer
+from scripts.etl.dataset import MILDataset, MultitaskMILDataset
+from scripts.models.mil_transformer import MILTransformer, MultiMILTransformer
 from scripts.utils.metrics import compute_auprc, metrics_at_threshold
 from scripts.utils.mlflow_utils import log_confusion_matrix, log_metrics_at_thresholds
 
@@ -131,6 +131,116 @@ def evaluate(
     return float(np.mean(losses)), float(auroc), probs, labels_out
 
 
+def train_one_epoch_multitask(model, loader, optimizer, criterion, device,
+                               scaler, accum_steps, tasks):
+    """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
+                {task: probs}, {task: labels}, mean_grad_norm)."""
+    model.train()
+    n = len(tasks)
+    task_probs  = {t: [] for t in tasks}
+    task_labels = {t: [] for t in tasks}
+    task_losses = {t: [] for t in tasks}
+    total_losses = []
+    grad_norms   = []
+    optimizer.zero_grad()
+    amp_enabled = device.type == "cuda"
+
+    for step, (embeddings, labels, valid_mask, _) in enumerate(loader):
+        embeddings = embeddings.to(device)
+        labels     = labels.to(device)       # (1, n_tasks)
+        valid_mask = valid_mask.to(device)   # (1, n_tasks)
+
+        with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
+            logits = model(embeddings)  # (1, n_tasks)
+            step_loss = torch.tensor(0.0, device=device)
+            for i, t in enumerate(tasks):
+                mask_i = valid_mask[:, i].bool()
+                if mask_i.any():
+                    tl = criterion(logits[:, i][mask_i], labels[:, i][mask_i])
+                    task_losses[t].append(tl.item())
+                    step_loss = step_loss + tl
+            step_loss = step_loss / n / accum_steps
+
+        if scaler is not None:
+            scaler.scale(step_loss).backward()
+        else:
+            step_loss.backward()
+
+        total_losses.append(step_loss.item() * accum_steps * n)
+
+        probs_all = torch.sigmoid(logits.detach()).cpu()
+        for i, t in enumerate(tasks):
+            if valid_mask[0, i].item() == 1.0:
+                task_probs[t].append(probs_all[0, i].item())
+                task_labels[t].append(int(labels[0, i].item()))
+
+        is_last = (step + 1) == len(loader)
+        if (step + 1) % accum_steps == 0 or is_last:
+            total_norm = torch.sqrt(torch.stack([
+                p.grad.detach().norm() ** 2
+                for p in model.parameters() if p.grad is not None
+            ]).sum())
+            grad_norms.append(total_norm.item())
+            if scaler is not None:
+                scaler.step(optimizer); scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
+
+    task_auroc = {}
+    task_mean_loss = {}
+    for t in tasks:
+        p, l = task_probs[t], task_labels[t]
+        task_auroc[t] = roc_auc_score(l, p) if len(set(l)) > 1 else 0.0
+        task_mean_loss[t] = float(np.mean(task_losses[t])) if task_losses[t] else 0.0
+
+    mean_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+    return float(np.mean(total_losses)), task_mean_loss, task_auroc, task_probs, task_labels, mean_grad_norm
+
+
+def evaluate_multitask(model, loader, criterion, device, tasks):
+    """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
+                {task: probs}, {task: labels})."""
+    model.eval()
+    n = len(tasks)
+    task_probs  = {t: [] for t in tasks}
+    task_labels = {t: [] for t in tasks}
+    task_losses = {t: [] for t in tasks}
+    total_losses = []
+    amp_enabled = device.type == "cuda"
+
+    with torch.no_grad():
+        for embeddings, labels, valid_mask, _ in loader:
+            embeddings = embeddings.to(device)
+            labels     = labels.to(device)
+            valid_mask = valid_mask.to(device)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
+                logits    = model(embeddings)
+                step_loss = torch.tensor(0.0, device=device)
+                for i, t in enumerate(tasks):
+                    mask_i = valid_mask[:, i].bool()
+                    if mask_i.any():
+                        tl = criterion(logits[:, i][mask_i], labels[:, i][mask_i])
+                        task_losses[t].append(tl.item())
+                        step_loss = step_loss + tl
+                step_loss = step_loss / n
+            total_losses.append(step_loss.item())
+            probs_all = torch.sigmoid(logits).cpu()
+            for i, t in enumerate(tasks):
+                if valid_mask[0, i].item() == 1.0:
+                    task_probs[t].append(probs_all[0, i].item())
+                    task_labels[t].append(int(labels[0, i].item()))
+
+    task_auroc = {}
+    task_mean_loss = {}
+    for t in tasks:
+        p, l = task_probs[t], task_labels[t]
+        task_auroc[t] = roc_auc_score(l, p) if len(set(l)) > 1 else 0.0
+        task_mean_loss[t] = float(np.mean(task_losses[t])) if task_losses[t] else 0.0
+
+    return float(np.mean(total_losses)), task_mean_loss, task_auroc, task_probs, task_labels
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(
@@ -158,32 +268,53 @@ def main(
     embeddings_dir = emb_dir_override or cfg["paths"]["embeddings_dir"]
     data_dir       = data_dir_override or cfg["paths"]["data_dir"]
 
+    mc = cfg["model"]
+    output_classes = mc.get("output_classes", 1)
+    multitask = output_classes > 1
+    tasks = cfg["data"].get("tasks", []) if multitask else []
+
     def make_loader(split_key: str, shuffle: bool) -> DataLoader:
-        return DataLoader(
-            MILDataset(
+        if multitask:
+            ds = MultitaskMILDataset(
+                split_csv=os.path.join(data_dir, cfg["data"][split_key]),
+                embeddings_dir=embeddings_dir,
+                tasks=tasks,
+                slide_id_col=cfg["data"]["slide_id_column"],
+            )
+        else:
+            ds = MILDataset(
                 split_csv=os.path.join(data_dir, cfg["data"][split_key]),
                 embeddings_dir=embeddings_dir,
                 label_col=cfg["data"]["label_column"],
                 slide_id_col=cfg["data"]["slide_id_column"],
-            ),
-            batch_size=1,
-            shuffle=shuffle,
-        )
+            )
+        return DataLoader(ds, batch_size=1, shuffle=shuffle)
 
     train_loader = make_loader("train_split", shuffle=True)
     val_loader   = make_loader("val_split",   shuffle=False)
     test_loader  = make_loader("test_split",  shuffle=False)
 
-    mc = cfg["model"]
-    model = MILTransformer(
-        input_dim=mc["input_dim"],
-        hidden_dim=mc["hidden_dim"],
-        num_layers=mc["transformer_layers"],
-        num_heads=mc["num_heads"],
-        ffn_dim=mc["ffn_dim"],
-        dropout=mc["dropout"],
-        layer_norm_eps=mc["layer_norm_eps"],
-    ).to(device)
+    if multitask:
+        model = MultiMILTransformer(
+            input_dim=mc["input_dim"],
+            hidden_dim=mc["hidden_dim"],
+            num_layers=mc["transformer_layers"],
+            num_heads=mc["num_heads"],
+            ffn_dim=mc["ffn_dim"],
+            dropout=mc["dropout"],
+            layer_norm_eps=mc["layer_norm_eps"],
+            output_classes=output_classes,
+        ).to(device)
+    else:
+        model = MILTransformer(
+            input_dim=mc["input_dim"],
+            hidden_dim=mc["hidden_dim"],
+            num_layers=mc["transformer_layers"],
+            num_heads=mc["num_heads"],
+            ffn_dim=mc["ffn_dim"],
+            dropout=mc["dropout"],
+            layer_norm_eps=mc["layer_norm_eps"],
+        ).to(device)
 
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
@@ -204,7 +335,9 @@ def main(
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"], weight_decay=weight_decay)
 
-    if class_weighting:
+    if multitask:
+        pos_weight = None
+    elif class_weighting:
         train_csv = os.path.join(data_dir, cfg["data"]["train_split"])
         _df = pd.read_csv(train_csv)
         _n_pos = int(_df[cfg["data"]["label_column"]].sum())
@@ -251,7 +384,7 @@ def main(
         # ── Full config + runtime-derived params ──────────────────────────────
         mlflow.log_params(_flatten_dict(cfg))
         extra = {
-            "loss_fn":                   "BCEWithLogitsLoss(weighted)" if class_weighting else "BCEWithLogitsLoss",
+            "loss_fn":                   "BCEWithLogitsLoss(weighted)" if (class_weighting and not multitask) else "BCEWithLogitsLoss",
             "aggregator":                mc.get("aggregation", "mean"),
             "arch_variant":              "MILTransformer",
             "device":                    str(device),
@@ -264,12 +397,28 @@ def main(
             "grad_accum_steps":          accum_steps,
             "early_stopping_patience":   early_stopping_patience,
         }
-        if class_weighting:
+        if class_weighting and not multitask:
             extra["pos_weight"] = round(_n_neg / _n_pos, 4)
         if run_name is not None:
             extra["run_name"] = run_name
+        if multitask:
+            extra["model_type"] = "MultiMILTransformer"
+            extra["output_classes"] = output_classes
+            extra["tasks"] = ",".join(tasks)
         mlflow.log_params(extra)
         mlflow.set_tag("git_commit", _git_commit())
+
+        if multitask:
+            for split_key, split_name in [
+                ("train_split", "train"), ("val_split", "val"), ("test_split", "test")
+            ]:
+                split_csv = os.path.join(data_dir, cfg["data"][split_key])
+                df_split = pd.read_csv(split_csv)
+                for t in tasks:
+                    mlflow.log_param(
+                        f"n_valid_{t}_{split_name}",
+                        int(df_split[f"label_{t}"].notna().sum())
+                    )
 
         # Log the config file itself as an artifact
         mlflow.log_artifact(config_path)
@@ -283,44 +432,100 @@ def main(
         patience   = early_stopping_patience if early_stopping_patience > 0 else 10 ** 9
         best_path  = models_dir / "best_model.pt"
 
+        # Multitask best-val tracking
+        best_val_probs_d:  dict = {t: [] for t in tasks}
+        best_val_labels_d: dict = {t: [] for t in tasks}
+        best_val_auroc_d:  dict = {t: 0.0 for t in tasks}
+        best_val_auprc_mean: float = 0.0
+
         val_probs, val_labels = [], []
         for epoch in range(n_epochs):
-            train_loss, train_auroc, train_probs, train_labels = train_one_epoch(
-                model, train_loader, optimizer, criterion, device, scaler, accum_steps
-            )
-            val_loss, val_auroc, val_probs, val_labels = evaluate(
-                model, val_loader, criterion, device
-            )
+            if multitask:
+                train_loss, train_loss_d, train_auroc_d, train_probs_d, train_labels_d, grad_norm = \
+                    train_one_epoch_multitask(
+                        model, train_loader, optimizer, criterion, device, scaler, accum_steps, tasks
+                    )
+                val_loss, val_loss_d, val_auroc_d, val_probs_d, val_labels_d = \
+                    evaluate_multitask(model, val_loader, criterion, device, tasks)
 
-            train_m     = metrics_at_threshold(train_labels, train_probs, 0.5)
-            train_auprc = compute_auprc(train_labels, train_probs)
-            val_m       = metrics_at_threshold(val_labels, val_probs, 0.5)
-            val_auprc   = compute_auprc(val_labels, val_probs)
+                val_auroc_mean = float(np.mean(list(val_auroc_d.values())))
+                val_auprc_mean = float(np.mean([
+                    compute_auprc(val_labels_d[t], val_probs_d[t]) for t in tasks
+                ]))
 
-            mlflow.log_metrics(
-                {
-                    "train_loss":        train_loss,
-                    "train_auroc":       train_auroc,
-                    "train_auprc":       train_auprc,
-                    "train_f1":          train_m["f1"],
-                    "train_sensitivity": train_m["recall"],
-                    "train_specificity": train_m["specificity"],
-                    "val_loss":          val_loss,
-                    "val_auroc":         val_auroc,
-                    "val_auprc":         val_auprc,
-                    "val_f1":            val_m["f1"],
-                    "val_sensitivity":   val_m["recall"],
-                    "val_specificity":   val_m["specificity"],
-                },
-                step=epoch,
-            )
+                metrics = {
+                    "train_loss":       train_loss,
+                    "val_loss":         val_loss,
+                    "val_auroc_mean":   val_auroc_mean,
+                    "val_auprc_mean":   val_auprc_mean,
+                    "global_grad_norm": grad_norm,
+                    "learning_rate":    optimizer.param_groups[0]["lr"],
+                }
+                for i, t in enumerate(tasks):
+                    metrics[f"head_weight_var_{t}"] = model.classifier.weight[i].var().item()
+                for t in tasks:
+                    metrics[f"train_loss_{t}"]        = train_loss_d[t]
+                    metrics[f"val_loss_{t}"]           = val_loss_d[t]
+                    metrics[f"train_auroc_{t}"]        = train_auroc_d[t]
+                    metrics[f"val_auroc_{t}"]          = val_auroc_d[t]
+                    metrics[f"train_auprc_{t}"]        = compute_auprc(train_labels_d[t], train_probs_d[t])
+                    metrics[f"val_auprc_{t}"]          = compute_auprc(val_labels_d[t], val_probs_d[t])
+                    tm = metrics_at_threshold(train_labels_d[t], train_probs_d[t], 0.5)
+                    vm = metrics_at_threshold(val_labels_d[t], val_probs_d[t], 0.5)
+                    metrics[f"train_f1_{t}"]          = tm["f1"]
+                    metrics[f"train_sensitivity_{t}"] = tm["recall"]
+                    metrics[f"train_specificity_{t}"] = tm["specificity"]
+                    metrics[f"val_f1_{t}"]            = vm["f1"]
+                    metrics[f"val_sensitivity_{t}"]   = vm["recall"]
+                    metrics[f"val_specificity_{t}"]   = vm["specificity"]
+                mlflow.log_metrics(metrics, step=epoch)
 
-            print(
-                f"Epoch {epoch+1:>3}/{n_epochs}  "
-                f"train_loss={train_loss:.4f}  train_auroc={train_auroc:.4f}  "
-                f"val_loss={val_loss:.4f}  val_auroc={val_auroc:.4f}  "
-                f"val_f1={val_m['f1']:.4f}  val_sens={val_m['recall']:.4f}  val_spec={val_m['specificity']:.4f}"
-            )
+                print(
+                    f"Epoch {epoch+1:>3}/{n_epochs}  "
+                    f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
+                    f"val_auroc_mean={val_auroc_mean:.4f}  val_auprc_mean={val_auprc_mean:.4f}"
+                )
+
+                monitor_auroc = val_auroc_mean
+            else:
+                train_loss, train_auroc, train_probs, train_labels = train_one_epoch(
+                    model, train_loader, optimizer, criterion, device, scaler, accum_steps
+                )
+                val_loss, val_auroc, val_probs, val_labels = evaluate(
+                    model, val_loader, criterion, device
+                )
+
+                train_m     = metrics_at_threshold(train_labels, train_probs, 0.5)
+                train_auprc = compute_auprc(train_labels, train_probs)
+                val_m       = metrics_at_threshold(val_labels, val_probs, 0.5)
+                val_auprc   = compute_auprc(val_labels, val_probs)
+
+                mlflow.log_metrics(
+                    {
+                        "train_loss":        train_loss,
+                        "train_auroc":       train_auroc,
+                        "train_auprc":       train_auprc,
+                        "train_f1":          train_m["f1"],
+                        "train_sensitivity": train_m["recall"],
+                        "train_specificity": train_m["specificity"],
+                        "val_loss":          val_loss,
+                        "val_auroc":         val_auroc,
+                        "val_auprc":         val_auprc,
+                        "val_f1":            val_m["f1"],
+                        "val_sensitivity":   val_m["recall"],
+                        "val_specificity":   val_m["specificity"],
+                    },
+                    step=epoch,
+                )
+
+                print(
+                    f"Epoch {epoch+1:>3}/{n_epochs}  "
+                    f"train_loss={train_loss:.4f}  train_auroc={train_auroc:.4f}  "
+                    f"val_loss={val_loss:.4f}  val_auroc={val_auroc:.4f}  "
+                    f"val_f1={val_m['f1']:.4f}  val_sens={val_m['recall']:.4f}  val_spec={val_m['specificity']:.4f}"
+                )
+
+                monitor_auroc = val_auroc
 
             if scheduler is not None:
                 scheduler.step()
@@ -333,11 +538,17 @@ def main(
                 torch.save(ckpt, models_dir / f"epoch_{epoch+1:04d}.pt")
 
             # Best-model checkpoint
-            if val_auroc > best_auroc:
-                best_auroc = val_auroc
+            if monitor_auroc > best_auroc:
+                best_auroc = monitor_auroc
                 best_epoch = epoch + 1
-                best_val_probs  = list(val_probs)
-                best_val_labels = list(val_labels)
+                if multitask:
+                    best_val_probs_d  = {t: list(val_probs_d[t]) for t in tasks}
+                    best_val_labels_d = {t: list(val_labels_d[t]) for t in tasks}
+                    best_val_auroc_d  = dict(val_auroc_d)
+                    best_val_auprc_mean = val_auprc_mean
+                else:
+                    best_val_probs  = list(val_probs)
+                    best_val_labels = list(val_labels)
                 no_improve = 0
                 ckpt = {"model": model.state_dict()}
                 if scheduler is not None:
@@ -353,11 +564,16 @@ def main(
                     break
 
         # ── Final val metrics + confusion matrix ──────────────────────────────
-        log_metrics_at_thresholds(val_probs, val_labels, thresholds, prefix="val")
-        mlflow.log_metric("best_val_auroc", best_auroc)
-        mlflow.log_metric("best_epoch", best_epoch)
-        log_metrics_at_thresholds(best_val_probs, best_val_labels, thresholds, prefix="best_val", step=best_epoch)
-        log_confusion_matrix(val_probs, val_labels, threshold=0.5, prefix="val")
+        if multitask:
+            mlflow.log_metric("best_val_auroc_mean", best_auroc)
+            mlflow.log_metric("best_val_auprc_mean", best_val_auprc_mean)
+            mlflow.log_metric("best_epoch", best_epoch)
+        else:
+            log_metrics_at_thresholds(val_probs, val_labels, thresholds, prefix="val")
+            mlflow.log_metric("best_val_auroc", best_auroc)
+            mlflow.log_metric("best_epoch", best_epoch)
+            log_metrics_at_thresholds(best_val_probs, best_val_labels, thresholds, prefix="best_val", step=best_epoch)
+            log_confusion_matrix(val_probs, val_labels, threshold=0.5, prefix="val")
 
         # ── Test set evaluation ───────────────────────────────────────────────
         if best_path.exists():
@@ -372,18 +588,36 @@ def main(
                 step=best_epoch,
             )
 
-        _, test_auroc, test_probs, test_labels = evaluate(
-            model, test_loader, criterion, device
-        )
-        mlflow.log_metric(
-            "test_auroc", test_auroc,
-            model_id=model_info.model_id if best_path.exists() else None,
-        )
-        log_confusion_matrix(test_probs, test_labels, threshold=0.5, prefix="test")
-
-        print(f"Test  AUROC: {test_auroc:.4f}")
-
-    print(f"\nDone.  Best val AUROC: {best_auroc:.4f}  (epoch {best_epoch})  →  {best_path}")
+        if multitask:
+            test_loss, test_loss_d, test_auroc_d, test_probs_d, test_labels_d = \
+                evaluate_multitask(model, test_loader, criterion, device, tasks)
+            test_auprc_mean = float(np.mean([
+                compute_auprc(test_labels_d[t], test_probs_d[t]) for t in tasks
+            ]))
+            mlflow.log_metric("test_auprc_mean", test_auprc_mean)
+            for t in tasks:
+                mlflow.log_metric(f"best_val_auroc_{t}", best_val_auroc_d[t])
+                mlflow.log_metric(f"best_val_auprc_{t}", compute_auprc(best_val_labels_d[t], best_val_probs_d[t]))
+                mlflow.log_metric(f"test_auroc_{t}", test_auroc_d[t])
+                mlflow.log_metric(f"test_auprc_{t}", compute_auprc(test_labels_d[t], test_probs_d[t]))
+                log_metrics_at_thresholds(best_val_probs_d[t], best_val_labels_d[t],
+                                          thresholds, prefix=f"best_val_{t}", step=best_epoch)
+                log_metrics_at_thresholds(test_probs_d[t], test_labels_d[t],
+                                          thresholds, prefix=f"test_{t}")
+                log_confusion_matrix(test_probs_d[t], test_labels_d[t], 0.5, prefix=f"test_{t}")
+            print(f"Test AUROC: " + "  ".join(f"{t}={test_auroc_d[t]:.4f}" for t in tasks))
+            print(f"\nDone.  Best val AUROC mean: {best_auroc:.4f}  (epoch {best_epoch})  →  {best_path}")
+        else:
+            _, test_auroc, test_probs, test_labels = evaluate(
+                model, test_loader, criterion, device
+            )
+            mlflow.log_metric(
+                "test_auroc", test_auroc,
+                model_id=model_info.model_id if best_path.exists() else None,
+            )
+            log_confusion_matrix(test_probs, test_labels, threshold=0.5, prefix="test")
+            print(f"Test  AUROC: {test_auroc:.4f}")
+            print(f"\nDone.  Best val AUROC: {best_auroc:.4f}  (epoch {best_epoch})  →  {best_path}")
 
 
 if __name__ == "__main__":

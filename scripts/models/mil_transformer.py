@@ -71,3 +71,38 @@ class MILTransformer(nn.Module):
         x = self.transformer(x)         # (B, N, hidden_dim)
         x = x.mean(dim=1)              # (B, hidden_dim) — mean pool over patches
         return self.classifier(x).squeeze(-1)  # (B,)
+
+
+class MultiMILTransformer(nn.Module):
+    """Multi-head MIL transformer for joint prediction of multiple tasks.
+
+    Identical to MILTransformer through the transformer encoder and mean pool.
+    Replaces the single Linear(hidden_dim, 1) classifier with
+    Linear(hidden_dim, output_classes) — each output column is an independent
+    task logit. Mathematically equivalent to output_classes separate heads;
+    gradients for column i are driven only by loss on task i.
+
+    Args:
+        output_classes: Number of independent binary tasks (e.g. 3 for MMR+RAS+BRAF).
+        All other args: same as MILTransformer.
+
+    Returns:
+        Logit tensor of shape (batch, output_classes).
+    """
+
+    def __init__(self, input_dim=1024, hidden_dim=512, num_layers=2, num_heads=2,
+                 ffn_dim=2048, dropout=0.15, layer_norm_eps=1e-5, output_classes=3):
+        super().__init__()
+        self.input_proj = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, nhead=num_heads, dim_feedforward=ffn_dim,
+            dropout=dropout, layer_norm_eps=layer_norm_eps, batch_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.classifier = nn.Linear(hidden_dim, output_classes)
+
+    def forward(self, x):
+        x = self.input_proj(x)        # (B, N, hidden_dim)
+        x = self.transformer(x)       # (B, N, hidden_dim)
+        x = x.mean(dim=1)            # (B, hidden_dim)
+        return self.classifier(x)     # (B, output_classes)

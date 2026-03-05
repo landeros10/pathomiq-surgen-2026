@@ -130,3 +130,44 @@ class MILDataset(Dataset):
             self._gcs_fs = gcsfs.GCSFileSystem()
         with self._gcs_fs.open(gcs_path, "rb") as f:
             return torch.load(f, map_location="cpu", weights_only=True)
+
+
+class MultitaskMILDataset(MILDataset):
+    """MILDataset variant for joint multitask learning.
+
+    Expects CSV with columns label_{task} for each task in tasks list.
+    Returns a valid_mask tensor alongside labels so the training loop can
+    compute loss only where a label is present (NaN → mask=0).
+
+    Returns per item:
+        embeddings:  (N_patches, embedding_dim) float32 tensor
+        labels:      (num_tasks,) float32 tensor — 0.0 where NaN
+        valid_mask:  (num_tasks,) float32 tensor — 1.0 where label present
+        slide_id:    str
+    """
+
+    def __init__(self, split_csv, embeddings_dir, tasks, slide_id_col="slide_id"):
+        self.df = pd.read_csv(split_csv).reset_index(drop=True)
+        self.embeddings_dir = str(embeddings_dir).rstrip("/")
+        self.tasks = tasks
+        self.label_cols = [f"label_{t}" for t in tasks]
+        self.slide_id_col = slide_id_col
+        self._gcs_fs = None
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        slide_id = str(row[self.slide_id_col])
+        embeddings = self._load_embedding(slide_id)
+        labels, mask = [], []
+        for col in self.label_cols:
+            val = row[col]
+            if pd.isna(val):
+                labels.append(0.0); mask.append(0.0)
+            else:
+                labels.append(float(val)); mask.append(1.0)
+        return (
+            embeddings,
+            torch.tensor(labels, dtype=torch.float32),
+            torch.tensor(mask,   dtype=torch.float32),
+            slide_id,
+        )

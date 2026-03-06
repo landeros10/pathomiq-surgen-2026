@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
@@ -131,7 +132,56 @@ def evaluate(
     return float(np.mean(losses)), float(auroc), probs, labels_out
 
 
-def train_one_epoch_multitask(model, loader, optimizer, criterion, device,
+def _compute_grad_diagnostics(model, sample_batch, task_criteria, device, tasks):
+    """Single diagnostic forward+per-task backward on one sample batch.
+
+    Captures gradients at the final shared transformer layer and returns:
+    - per-task gradient norms
+    - pairwise cosine similarities between task gradient vectors
+
+    Uses model.eval() so dropout is disabled, giving stable estimates.
+    """
+    model.eval()
+    amp_enabled = device.type == "cuda"
+    embeddings, labels, valid_mask, _ = sample_batch
+    embeddings  = embeddings.to(device)
+    labels      = labels.to(device)
+    valid_mask  = valid_mask.to(device)
+
+    final_layer_params = list(model.transformer.layers[-1].parameters())
+    task_grads: dict = {}
+
+    for i, t in enumerate(tasks):
+        if valid_mask[0, i].item() == 0.0:
+            continue
+        model.zero_grad()
+        with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
+            logits = model(embeddings)
+            loss   = task_criteria[i](logits[:, i], labels[:, i])
+        loss.backward()
+        grads = [p.grad.detach().flatten() for p in final_layer_params if p.grad is not None]
+        if grads:
+            task_grads[t] = torch.cat(grads)
+
+    model.zero_grad()
+    model.train()
+
+    grad_norms: dict = {t: float(g.norm()) for t, g in task_grads.items()}
+    cos_sims:   dict = {}
+    task_list = list(task_grads.keys())
+    for i in range(len(task_list)):
+        for j in range(i + 1, len(task_list)):
+            t1, t2 = task_list[i], task_list[j]
+            g1, g2 = task_grads[t1], task_grads[t2]
+            n1, n2 = g1.norm(), g2.norm()
+            cos = float(F.cosine_similarity(g1.unsqueeze(0), g2.unsqueeze(0)).item()) \
+                if n1 > 0 and n2 > 0 else 0.0
+            cos_sims[(t1, t2)] = cos
+
+    return grad_norms, cos_sims
+
+
+def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
                                scaler, accum_steps, tasks):
     """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
                 {task: probs}, {task: labels}, mean_grad_norm)."""
@@ -156,7 +206,7 @@ def train_one_epoch_multitask(model, loader, optimizer, criterion, device,
             for i, t in enumerate(tasks):
                 mask_i = valid_mask[:, i].bool()
                 if mask_i.any():
-                    tl = criterion(logits[:, i][mask_i], labels[:, i][mask_i])
+                    tl = criteria[i](logits[:, i][mask_i], labels[:, i][mask_i])
                     task_losses[t].append(tl.item())
                     step_loss = step_loss + tl
             step_loss = step_loss / n / accum_steps
@@ -198,7 +248,7 @@ def train_one_epoch_multitask(model, loader, optimizer, criterion, device,
     return float(np.mean(total_losses)), task_mean_loss, task_auroc, task_probs, task_labels, mean_grad_norm
 
 
-def evaluate_multitask(model, loader, criterion, device, tasks):
+def evaluate_multitask(model, loader, criteria, device, tasks):
     """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
                 {task: probs}, {task: labels})."""
     model.eval()
@@ -220,7 +270,7 @@ def evaluate_multitask(model, loader, criterion, device, tasks):
                 for i, t in enumerate(tasks):
                     mask_i = valid_mask[:, i].bool()
                     if mask_i.any():
-                        tl = criterion(logits[:, i][mask_i], labels[:, i][mask_i])
+                        tl = criteria[i](logits[:, i][mask_i], labels[:, i][mask_i])
                         task_losses[t].append(tl.item())
                         step_loss = step_loss + tl
                 step_loss = step_loss / n
@@ -336,17 +386,34 @@ def main(
         optimizer = torch.optim.Adam(model.parameters(), lr=tc["lr"], weight_decay=weight_decay)
 
     if multitask:
-        pos_weight = None
+        # Build per-task criteria; compute pos_weight per head when class_weighting=True
+        _train_csv = os.path.join(data_dir, cfg["data"]["train_split"])
+        _df_train  = pd.read_csv(_train_csv)
+        task_pos_weights: dict = {}
+        task_criteria: list = []
+        for t in tasks:
+            col   = f"label_{t}"
+            n_pos = int(_df_train[col].sum())
+            n_neg = int(_df_train[col].notna().sum()) - n_pos
+            if class_weighting and n_pos > 0:
+                pw = torch.tensor([n_neg / n_pos], dtype=torch.float32).to(device)
+                task_pos_weights[t] = n_neg / n_pos
+            else:
+                pw = None
+                task_pos_weights[t] = None
+            task_criteria.append(nn.BCEWithLogitsLoss(pos_weight=pw))
+        criterion = None  # unused in multitask path
     elif class_weighting:
         train_csv = os.path.join(data_dir, cfg["data"]["train_split"])
         _df = pd.read_csv(train_csv)
         _n_pos = int(_df[cfg["data"]["label_column"]].sum())
         _n_neg = len(_df) - _n_pos
         pos_weight = torch.tensor([_n_neg / _n_pos], dtype=torch.float32).to(device)
+        task_criteria = None
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     else:
-        pos_weight = None
-
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        task_criteria = None
+        criterion = nn.BCEWithLogitsLoss()
 
     lr_warmup_epochs = tc.get("lr_scheduler_warmup_epochs", 0)
     lr_eta_min       = tc.get("lr_scheduler_eta_min", 0.0)
@@ -384,7 +451,9 @@ def main(
         # ── Full config + runtime-derived params ──────────────────────────────
         mlflow.log_params(_flatten_dict(cfg))
         extra = {
-            "loss_fn":                   "BCEWithLogitsLoss(weighted)" if (class_weighting and not multitask) else "BCEWithLogitsLoss",
+            "loss_fn":                   ("BCEWithLogitsLoss(per-head weighted)" if (class_weighting and multitask)
+                                          else ("BCEWithLogitsLoss(weighted)" if (class_weighting and not multitask)
+                                                else "BCEWithLogitsLoss")),
             "aggregator":                mc.get("aggregation", "mean"),
             "arch_variant":              "MILTransformer",
             "device":                    str(device),
@@ -399,6 +468,10 @@ def main(
         }
         if class_weighting and not multitask:
             extra["pos_weight"] = round(_n_neg / _n_pos, 4)
+        if class_weighting and multitask:
+            for t in tasks:
+                if task_pos_weights[t] is not None:
+                    extra[f"pos_weight_{t}"] = round(task_pos_weights[t], 4)
         if run_name is not None:
             extra["run_name"] = run_name
         if multitask:
@@ -443,10 +516,10 @@ def main(
             if multitask:
                 train_loss, train_loss_d, train_auroc_d, train_probs_d, train_labels_d, grad_norm = \
                     train_one_epoch_multitask(
-                        model, train_loader, optimizer, criterion, device, scaler, accum_steps, tasks
+                        model, train_loader, optimizer, task_criteria, device, scaler, accum_steps, tasks
                     )
                 val_loss, val_loss_d, val_auroc_d, val_probs_d, val_labels_d = \
-                    evaluate_multitask(model, val_loader, criterion, device, tasks)
+                    evaluate_multitask(model, val_loader, task_criteria, device, tasks)
 
                 val_auroc_mean = float(np.mean(list(val_auroc_d.values())))
                 val_auprc_mean = float(np.mean([
@@ -478,6 +551,18 @@ def main(
                     metrics[f"val_f1_{t}"]            = vm["f1"]
                     metrics[f"val_sensitivity_{t}"]   = vm["recall"]
                     metrics[f"val_specificity_{t}"]   = vm["specificity"]
+
+                # Per-task gradient norms + pairwise cosine similarities
+                diag_batch = next(iter(train_loader))
+                grad_norms_d, cos_sims_d = _compute_grad_diagnostics(
+                    model, diag_batch, task_criteria, device, tasks
+                )
+                for t in tasks:
+                    if t in grad_norms_d:
+                        metrics[f"task_grad_norm_{t}"] = grad_norms_d[t]
+                for (t1, t2), cos in cos_sims_d.items():
+                    metrics[f"grad_cos_{t1}_{t2}"] = cos
+
                 mlflow.log_metrics(metrics, step=epoch)
 
                 print(
@@ -590,7 +675,7 @@ def main(
 
         if multitask:
             test_loss, test_loss_d, test_auroc_d, test_probs_d, test_labels_d = \
-                evaluate_multitask(model, test_loader, criterion, device, tasks)
+                evaluate_multitask(model, test_loader, task_criteria, device, tasks)
             test_auprc_mean = float(np.mean([
                 compute_auprc(test_labels_d[t], test_probs_d[t]) for t in tasks
             ]))

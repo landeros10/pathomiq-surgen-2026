@@ -118,46 +118,63 @@ This yields **2 runs total**: `multitask-base`, `multitask-cosine-accum16`.
 - [x] **Step 3 — Build multitask splits**: `scripts/etl/build_multitask_splits.py` outer-joins MMR/RAS/BRAF per `case_id` → `SurGen_multitask_{train,validate,test}.csv` (cols: `case_id`, `slide_id`, `label_mmr`, `label_ras`, `label_braf`; NaN where task missing). Train=496, val=165, test=165. All assertions passed. Superseded `SurGen_{braf,ras}_*.csv` and `build_combined_splits.py` deleted.
 - [x] **Step 4 — Config changes**: `configs/phase5/config_multitask_base.yaml` (lr=1e-4, accum=1) and `config_multitask_cosine_accum16.yaml` (lr=1e-5, cosine, accum=16). Both include `model_type: "MultiMILTransformer"`, `output_classes: 3`, `tasks: [mmr, ras, braf]`.
 - [x] **Step 5 — Implement `MultiMILTransformer` and update `train.py`**: `MultiMILTransformer` added to `scripts/models/mil_transformer.py` (same encoder/pool as `MILTransformer`, `Linear(hidden_dim, output_classes)` output). `MultitaskMILDataset` added to `scripts/etl/dataset.py` (returns `valid_mask` tensor, NaN → 0). `train.py` branches on `output_classes > 1`: masked per-task BCE loss, per-epoch per-task AUROC/AUPRC/F1/sensitivity/specificity + head weight variance logged, early stopping on mean val AUROC, final keys `best_val_auroc_mean`/`test_auroc_{task}` (no `best_val_auroc` for multitask). Single-task path unchanged. Smoke test passes.
-- [ ] **Step 6 — Train on GCP**: Run both configs sequentially via `scripts/run_phase5.sh` under `nohup`.
-- [ ] **Step 7 — Report**: Write `reports/YYYY-MM-DD-phase5-results.md` with a per-task AUROC table for both configs, comparison against Phase 3/4 MMR single-task result, and a diagnosis note if any task fails to show signal.
+- [x] **Step 6a — Preflight**: `scripts/run_phase5.sh --preflight` runs both configs for 1 epoch each. `scripts/verify_preflight_multitask_surgen.py` confirms FINISHED status, all 34 per-task metrics present, losses positive/finite, AUROCs in [0,1], and log tails clean.
+- [x] **Step 6b — Full training on GCP**: Both configs completed. `multitask-base` best epoch 5, `multitask-cosine-accum16` best epoch 29. MLflow experiment `multitask-surgen`, 2 FINISHED runs.
+- [x] **Step 7 — First report draft**: `scripts/studies/phase5_multitask_report.py` written and executed. Report at `reports/2026-03-05-phase5-results.md`. Includes per-task results table, Phase 4 reference comparison, stability tables (4 metrics groups), class imbalance / sensitivity analysis, 6 figures, conclusions, and 10 decision-making questions with suggested answers.
+- [x] **Step 8 — Per-head class weighting + gradient diagnostics**: Added per-head `pos_weight` to the multitask BCE loss in `train.py`, computed from training split label counts at startup. Two new configs: `configs/phase5/config_multitask_base_weighted.yaml` and `config_multitask_cosine_accum16_weighted.yaml` (same as originals but `class_weighting: true`). `run_phase5.sh` now accepts `--weighted` flag (order-independent with `--preflight`). Per-task gradient norms (`task_grad_norm_{t}`) and pairwise cosine similarities (`grad_cos_{t1}_{t2}`) at the final shared transformer layer logged to MLflow each epoch via `_compute_grad_diagnostics`. Server-side after git pull: `nohup ./scripts/run_phase5.sh --weighted > logs/phase5/orchestrator_weighted.log 2>&1 & tail -f logs/phase5/orchestrator_weighted.log`
+- [ ] **Step 9 — Weighted run report + RAS stratification check**: Re-run `scripts/studies/phase5_multitask_report.py` against all four runs (`multitask-base`, `multitask-cosine-accum16`, and both `-weighted` variants). Flag any run where a task-pair gradient cosine similarity is consistently below −0.5. Verify RAS label prevalence in val vs. test splits and note whether the val-to-test AUROC gap persists after weighting.
 
-### Gate: before moving to Phase 6
+### Gate: before moving to Phase 6 ✓ PASSED
 
-All three tasks must show per-task val AUROC clearly above chance (> 0.55) on at least one config variant. If any task fails on both variants, diagnose before proceeding. Gate also checks whether the winning stability config outperforms the base config on the new tasks.
+| Task | multitask-base test AUROC | multitask-cosine-accum16 test AUROC |
+|------|--------------------------|--------------------------------------|
+| MMR  | 0.8931 | 0.8782 |
+| RAS  | 0.6645 | 0.6195 |
+| BRAF | 0.8342 | 0.8122 |
+| mean | 0.7973 | 0.7700 |
+
+Winning config: `multitask-cosine-accum16` (stable training, vl_rise 6× lower on mean, 15× lower on BRAF; base config's higher test AUROC attributed to checkpoint timing, not meaningful superiority). RAS is the weakest head: test AUROC 0.62–0.66, val-to-test gap ~7–8 points, vl_rise=1.22 in base config. BRAF sensitivity collapses to 0.30–0.35 at threshold 0.5 due to absent `pos_weight`. MMR competitive with Phase 4 single-task (test AUROC 0.8782 vs. 0.8640); regularization hypothesis unconfirmed — requires epoch-matched vl_rise comparison. `multitask-cosine-accum16` is the base for all further multitask development.
 
 ---
 
-## Phase 6 — Attention Pooling + 2D Sinusoidal Positional Encoding
+## Phase 6 — ABMIL + Multitask Fixes + Attention Analysis
 
-**Goal:** Replace the two weakest components of the current baseline — mean pooling and zero spatial awareness — with the two highest-leverage improvements from `brca_riskformer`. Both changes are self-contained and do not require a data pipeline refactor.
+**Goal:** Two parallel objectives drive this phase: (1) determine whether multitask joint training regularizes the single-task overfitting observed in Phase 4 (the hypothesis being that predicting harder co-labels forces the backbone toward a richer, less shortcut-prone representation); and (2) determine whether multitask objectives shift the model's regions of attention toward more biologically meaningful tissue structures relative to single-task MMR training.
 
-**Why these two together:** Attention pooling and positional encoding are deeply coupled. Without PE, the attention weights have no spatial signal to attend to — patches are still exchangeable. Without attention pooling, PE has nowhere to concentrate its effect. They are most useful as a pair.
+**Why ABMIL is the prerequisite for both:** Mean pooling produces no interpretable attention map — the attention analysis goal cannot be answered with the current architecture. ABMIL (Ilse et al. 2018) is also a higher-leverage performance change than any scheduler or loss tweak for rare-label tasks (MMR 10%, BRAF 14%), where the positive signal is likely concentrated in a small fraction of patches. Switching to ABMIL enables both the interpretability study and potential AUROC gains simultaneously.
+
+**Multitask fixes bundled in this phase:** Three known failure modes from Phase 5 must be corrected before the attention analysis is meaningful: (a) no per-head class weighting despite large prevalence differences (10%/44%/14%), (b) equal-weight summing of task losses despite RAS dominating the gradient at 44% prevalence, and (c) BRAF sensitivity collapse (0.30–0.35) caused by (a). These are wired together as a single config change rather than separate ablation rounds.
 
 ### Steps
 
-- [ ] **Step 1 — Patch coordinate extraction**: The Zarr embeddings are stored in row-major order (row × col scan pattern). Add a `get_grid_shape(zarr_path)` utility that returns `(H, W)` from the Zarr array's stored metadata or inferred from patch count. Emit `(row, col)` indices alongside embeddings from `MILDataset`. Verify with a quick sanity check on one slide.
+- [ ] **Step 1 — Verify RAS val/test stratification**: Before any architecture change, confirm the val and test splits are stratified on the RAS label. Compute RAS positive rate in each split and check against train (44%). If unstratified, rebuild splits with stratification before proceeding. A 7–8 point val-to-test gap on RAS is a data problem, not a model problem.
 
-- [ ] **Step 2 — `SinusoidalPositionalEncoding2D`**: Port the class from `brca_riskformer/riskformer/training/layers.py` verbatim (MIT license) into `scripts/models/layers.py`. Unit test: given a `(1, H*W, 512)` tensor, confirm output shape is identical and values differ from input.
+- [ ] **Step 2 — Per-head class weighting + loss reweighting**: Extend the existing `pos_weight` logic (already implemented for single-task) to the multitask path: compute `pos_weight_t = (1 - prev_t) / prev_t` per head from the training split label counts at startup. Weight task losses by `1/prevalence` normalized to sum to 1 (MMR ≈ 0.45, BRAF ≈ 0.32, RAS ≈ 0.10 after normalization — or tune empirically). Log per-head `pos_weight_t` and `task_loss_weight_t` as MLflow params.
 
-- [ ] **Step 3 — Attention pooling head**: Replace `x.mean(dim=1)` in `MILTransformer.forward()` with a learned attention pool:
+- [ ] **Step 3 — ABMIL aggregation in `MultiMILTransformer`**: Replace `x.mean(dim=1)` with a learned attention pool:
   ```python
-  # attn_pool: nn.Linear(hidden_dim, 1)
-  weights = torch.softmax(self.attn_pool(x), dim=1)  # (B, N, 1)
-  x = (weights * x).sum(dim=1)                        # (B, hidden_dim)
+  # attn_pool: nn.Linear(hidden_dim, 1, bias=False)
+  weights = torch.softmax(self.attn_pool(x), dim=1)   # (B, N, 1)
+  pooled  = (weights * x).sum(dim=1)                   # (B, hidden_dim)
   ```
-  Add `attn_pool` to `__init__`. Keep `aggregation` key in config (`"mean"` vs `"attention"`) so old runs remain reproducible.
+  Gate with `aggregation: "attention"` vs `"mean"` in config so Phase 5 runs remain reproducible. Apply the same change to `MILTransformer` (single-task path). Log `aggregation` as MLflow param. Return `weights` from `forward()` for later visualization.
 
-- [ ] **Step 4 — Wire PE into forward pass**: After `input_proj`, reshape to `(B, H, W, hidden_dim)`, apply `SinusoidalPositionalEncoding2D`, reshape back to `(B, N, hidden_dim)`, then pass to transformer. Gate with a config flag `positional_encoding: "sinusoidal"` vs `"none"`.
+- [ ] **Step 4 — Patch coordinate extraction**: The Zarr embeddings are stored in row-major order. Add a `get_grid_shape(zarr_path)` utility returning `(H, W)` from Zarr metadata or patch count. Emit `(row, col)` indices alongside embeddings from `MultitaskMILDataset`. Required for Step 7 attention heatmaps.
 
-- [ ] **Step 5 — Config + MLflow**: Add `aggregation: "attention"` and `positional_encoding: "sinusoidal"` to `config_gcp.yaml`. Create a new MLflow run name (e.g., `mmr-uni-attn-sinpe-s1`). Log `aggregation` and `positional_encoding` as params.
+- [ ] **Step 5 — 2D Sinusoidal Positional Encoding** *(optional, can be deferred to Phase 7)*: Without PE, attention weights have no spatial signal to attend to — patches are still exchangeable after ABMIL. Port `SinusoidalPositionalEncoding2D` from `brca_riskformer` into `scripts/models/layers.py`. Gate with `positional_encoding: "sinusoidal"` vs `"none"`. If time-constrained, run Step 6 without PE and add PE as a Phase 7 ablation.
 
-- [ ] **Step 6 — Gate test (local, synthetic)**: Run the synthetic pipeline end-to-end with the new model. Confirm shapes and that gradients flow through both the attention weights and PE parameters.
+- [ ] **Step 6 — GCP training run**: Train multitask with ABMIL + per-head class weights + loss reweighting, cosine LR, accum=16 (building on the Phase 5 stability winner). Compare per-task val/test AUROC, sensitivity, and vl_rise against Phase 5 `multitask-cosine-accum16`. Compare MMR vl_rise against Phase 4 single-task `mmr-surgen-s1-cosine-accum16` (0.021) — a lower multitask vl_rise is evidence for the regularization hypothesis.
 
-- [ ] **Step 7 — GCP training run**: Train on real data. Compare val/test AUROC against Phase 3 baseline in MLflow.
+- [ ] **Step 7 — Attention analysis**: For a matched set of slides (same slide evaluated under single-task MMR head and multitask MMR head), extract per-patch attention weights from ABMIL, project back onto the slide patch grid, and generate heatmap overlays. Compare: do the multitask attention maps concentrate on different tissue regions than the single-task maps? Write `scripts/studies/attention_comparison.py` → `reports/YYYY-MM-DD-phase6-attention.md` with representative figure panels. This is the primary interpretability deliverable of Phase 6.
+
+- [ ] **Step 8 — Per-task gradient norm logging** *(diagnostic)*: Log cosine similarity between task gradient vectors at the final shared transformer layer at each epoch. If MMR–RAS cosine similarity is consistently near −1, the tasks are actively fighting in the backbone and GradNorm should be applied. If near 0, the shared backbone is large enough to accommodate both.
 
 ### Gate: before moving to Phase 7
 
-Run an ablation: train three variants (mean pool only / attention pool only / attention pool + sinusoidal PE) and compare val AUROC. Write `scripts/studies/ablation_pooling.py` to load each checkpoint and produce a comparison table in `reports/`. If attention pooling does not improve over mean pool by at least ~0.005, investigate before adding more complexity.
+- ABMIL multitask must match or exceed Phase 5 `multitask-cosine-accum16` mean val AUROC (0.821).
+- BRAF sensitivity must recover above 0.50 (from 0.30–0.35 in Phase 5) with per-head class weighting.
+- MMR vl_rise should be compared against Phase 4 single-task (0.021) to assess the regularization hypothesis. Document the result explicitly — do not defer.
+- At least one matched-slide attention comparison figure must be generated before proceeding to Phase 7.
 
 ---
 

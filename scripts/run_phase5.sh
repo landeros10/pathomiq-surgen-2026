@@ -5,11 +5,18 @@
 #   # Preflight: 1 epoch each to verify configs load and train
 #   ./scripts/run_phase5.sh --preflight
 #
+#   # Weighted variants (per-head class weighting)
+#   nohup ./scripts/run_phase5.sh --weighted > logs/phase5/orchestrator_weighted.log 2>&1 &
+#   tail -f logs/phase5/orchestrator_weighted.log
+#
+#   # Weighted preflight
+#   ./scripts/run_phase5.sh --weighted --preflight
+#
 #   # Full runs (background, survives SSH disconnect)
 #   nohup ./scripts/run_phase5.sh > logs/phase5/orchestrator.log 2>&1 &
 #   tail -f logs/phase5/orchestrator.log
 #
-# Each config is run sequentially; the outer loop survives SSH disconnect.
+# Flags are order-independent; each config runs sequentially.
 
 set -euo pipefail
 
@@ -19,24 +26,44 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 mkdir -p logs/phase5
 
-# Parse --preflight flag
+# Parse flags: --preflight and/or --weighted (order-independent)
 PREFLIGHT=0
+WEIGHTED=0
 EXTRA_ARGS=()
 LOG_SUFFIX=""
-if [ "${1:-}" == "--preflight" ]; then
-    PREFLIGHT=1
-    EXTRA_ARGS=(--max-epochs 1 --run-suffix preflight)
-    LOG_SUFFIX="_preflight"
-    shift
+for arg in "$@"; do
+    case "$arg" in
+        --preflight)
+            PREFLIGHT=1
+            EXTRA_ARGS+=(--max-epochs 1 --run-suffix preflight)
+            LOG_SUFFIX="_preflight"
+            ;;
+        --weighted)
+            WEIGHTED=1
+            ;;
+    esac
+done
+
+if [ "$PREFLIGHT" -eq 1 ]; then
     echo "════════════════════════════════════════"
     echo "  PREFLIGHT MODE: 1 epoch per config"
     echo "════════════════════════════════════════"
 fi
 
-CONFIGS=(
-    configs/phase5/config_multitask_base.yaml
-    configs/phase5/config_multitask_cosine_accum16.yaml
-)
+if [ "$WEIGHTED" -eq 1 ]; then
+    CONFIGS=(
+        configs/phase5/config_multitask_base_weighted.yaml
+        configs/phase5/config_multitask_cosine_accum16_weighted.yaml
+    )
+    echo "════════════════════════════════════════"
+    echo "  WEIGHTED MODE: per-head class weighting"
+    echo "════════════════════════════════════════"
+else
+    CONFIGS=(
+        configs/phase5/config_multitask_base.yaml
+        configs/phase5/config_multitask_cosine_accum16.yaml
+    )
+fi
 
 TOTAL=${#CONFIGS[@]}
 echo "Phase 5: ${TOTAL} config(s) to run sequentially"

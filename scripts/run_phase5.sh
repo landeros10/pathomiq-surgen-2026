@@ -9,6 +9,9 @@
 #   nohup ./scripts/run_phase5.sh --weighted > logs/phase5/orchestrator_weighted.log 2>&1 &
 #   tail -f logs/phase5/orchestrator_weighted.log
 #
+#   # Weighted with early-stopping patience override
+#   ./scripts/run_phase5.sh --weighted --patience 50
+#
 #   # Weighted preflight
 #   ./scripts/run_phase5.sh --weighted --preflight
 #
@@ -26,20 +29,31 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 mkdir -p logs/phase5
 
-# Parse flags: --preflight and/or --weighted (order-independent)
+# Parse flags: --preflight, --weighted, --patience N (order-independent)
 PREFLIGHT=0
 WEIGHTED=0
 EXTRA_ARGS=()
 LOG_SUFFIX=""
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --preflight)
             PREFLIGHT=1
             EXTRA_ARGS+=(--max-epochs 1 --run-suffix preflight)
             LOG_SUFFIX="_preflight"
+            shift
             ;;
         --weighted)
             WEIGHTED=1
+            shift
+            ;;
+        --patience)
+            [ $# -gt 1 ] || { echo "Error: --patience requires a value"; exit 1; }
+            EXTRA_ARGS+=(--patience "$2")
+            shift 2
+            ;;
+        *)
+            echo "Error: unknown option $1"
+            exit 1
             ;;
     esac
 done

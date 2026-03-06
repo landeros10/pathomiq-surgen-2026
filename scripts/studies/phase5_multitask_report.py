@@ -36,6 +36,12 @@ PHASE4_MMR_VAL  = 0.9002
 PHASE4_MMR_TEST = 0.8640
 EXPERIMENT_NAME = "multitask-surgen"
 MLFLOW_DB_PATH  = Path("mlflow.db")
+
+# Maps base run name → weighted run name for comparison sections
+RUN_PAIRS = [
+    ("multitask-base",           "multitask-base-weighted"),
+    ("multitask-cosine-accum16", "multitask-cosine-accum16-weighted"),
+]
 REPORT_DATE     = datetime.now().strftime("%Y-%m-%d")
 OUT_DIR         = Path("reports")
 FIGURES_DIR     = OUT_DIR / "figures"
@@ -166,7 +172,9 @@ def load_trajectories(conn: sqlite3.Connection, runs: dict) -> dict:
         [f"val_f1_{t}"          for t in TASKS] +
         [f"val_sensitivity_{t}" for t in TASKS] +
         [f"val_specificity_{t}" for t in TASKS] +
-        [f"head_weight_var_{t}" for t in TASKS]
+        [f"head_weight_var_{t}" for t in TASKS] +
+        [f"task_grad_norm_{t}"  for t in TASKS] +
+        ["grad_cos_mmr_ras", "grad_cos_mmr_braf", "grad_cos_ras_braf"]
     )
 
     placeholders_uuids = ",".join("?" * len(run_uuids))
@@ -376,6 +384,346 @@ def section_imbalance(runs: dict, trajectories: dict) -> str:
         "> **Gap**: output logit std (std of sigmoid(logits)) is not logged in `train.py`. "
         "Sensitivity collapse (Section 5b) is the available proxy for trivial prediction.\n\n"
     )
+
+    return "".join(lines)
+
+
+def section_weighting_comparison(runs: dict, trajectories: dict) -> str:
+    lines = ["## Section 6 — Class Weighting Comparison\n\n"]
+    lines.append(
+        "_Δ = weighted − unweighted. Only shown when both pair members are present._\n\n"
+    )
+
+    header = (
+        "| Config pair | Task "
+        "| Val AUROC (unw) | Val AUROC (w) | Δ "
+        "| Test AUROC (unw) | Test AUROC (w) | Δ "
+        "| Sens@best (unw) | Sens@best (w) | Δ |\n"
+    )
+    sep = (
+        "|-------------|------"
+        "|----------------|--------------|---"
+        "|-----------------|---------------|---"
+        "|-----------------|--------------|---|\n"
+    )
+    lines.append(header)
+    lines.append(sep)
+
+    for base_name, weighted_name in RUN_PAIRS:
+        if base_name not in runs or weighted_name not in runs:
+            lines.append(
+                f"| {base_name} vs {weighted_name} | — | — | — | — | — | — | — | — | — | — |\n"
+            )
+            continue
+
+        for task in TASKS:
+            def _sens_at_best(run_name: str, task: str) -> float | None:
+                sc = runs[run_name]["scalars"]
+                traj = trajectories.get(run_name, {})
+                best_epoch = sc.get("best_epoch")
+                sens_series = traj.get(f"val_sensitivity_{task}", [])
+                if best_epoch is None or not sens_series:
+                    return None
+                idx = min(max(int(best_epoch) - 1, 0), len(sens_series) - 1)
+                return sens_series[idx]
+
+            u_val  = runs[base_name]["scalars"].get(f"best_val_auroc_{task}")
+            w_val  = runs[weighted_name]["scalars"].get(f"best_val_auroc_{task}")
+            u_test = runs[base_name]["scalars"].get(f"test_auroc_{task}")
+            w_test = runs[weighted_name]["scalars"].get(f"test_auroc_{task}")
+            u_sens = _sens_at_best(base_name, task)
+            w_sens = _sens_at_best(weighted_name, task)
+
+            d_val  = (w_val  - u_val)  if (w_val  is not None and u_val  is not None) else None
+            d_test = (w_test - u_test) if (w_test is not None and u_test is not None) else None
+            d_sens = (w_sens - u_sens) if (w_sens is not None and u_sens is not None) else None
+
+            pair_label = f"{base_name} vs {weighted_name}"
+            lines.append(
+                f"| {pair_label} | {task} "
+                f"| {fmt(u_val)} | {fmt(w_val)} | {fmt(d_val)} "
+                f"| {fmt(u_test)} | {fmt(w_test)} | {fmt(d_test)} "
+                f"| {fmt(u_sens)} | {fmt(w_sens)} | {fmt(d_sens)} |\n"
+            )
+
+    lines.append("\n")
+    return "".join(lines)
+
+
+def section_ras_stratification(runs: dict) -> str:
+    lines = ["## Section 7 — RAS Stratification Check\n\n"]
+
+    splits_dir = Path("data/splits")
+    try:
+        rows_list = []
+        for split in ["train", "validate", "test"]:
+            csv_path = splits_dir / f"SurGen_multitask_{split}.csv"
+            df = pd.read_csv(csv_path)
+            # Identify RAS column (case-insensitive)
+            ras_col = next(
+                (c for c in df.columns if c.lower() in ("ras", "ras_label", "label_ras")),
+                None
+            )
+            if ras_col is None:
+                rows_list.append((split, len(df), None, None))
+            else:
+                n_valid = df[ras_col].notna().sum()
+                n_pos   = int(df[ras_col].sum())
+                pct     = n_pos / n_valid * 100 if n_valid > 0 else None
+                rows_list.append((split, int(n_valid), n_pos, pct))
+
+        lines.append("| Split | N valid | RAS pos | RAS pos% |\n")
+        lines.append("|-------|---------|---------|----------|\n")
+        for split, n, pos, pct in rows_list:
+            lines.append(
+                f"| {split} | {n} | {pos if pos is not None else '—'} "
+                f"| {f'{pct:.1f}' if pct is not None else '—'} |\n"
+            )
+        lines.append("\n")
+
+        # Flag if val vs test positive rate differ by > 3 pp
+        val_row  = next((r for r in rows_list if r[0] == "validate"), None)
+        test_row = next((r for r in rows_list if r[0] == "test"),     None)
+        if val_row and test_row and val_row[3] is not None and test_row[3] is not None:
+            gap = abs(val_row[3] - test_row[3])
+            if gap > 3.0:
+                lines.append(
+                    f"> ⚠️ Val vs test RAS positive rate differ by **{gap:.1f} pp** "
+                    f"({val_row[3]:.1f}% vs {test_row[3]:.1f}%) — potential distribution shift.\n\n"
+                )
+            else:
+                lines.append(
+                    f"> Val vs test RAS positive rate gap: {gap:.1f} pp "
+                    f"({val_row[3]:.1f}% vs {test_row[3]:.1f}%) — within ±3 pp tolerance.\n\n"
+                )
+    except Exception as exc:
+        lines.append(f"_Split CSVs not found or unreadable ({exc}). Run on GCP to populate._\n\n")
+
+    return "".join(lines)
+
+
+def section_gradient_diagnostics(runs: dict, trajectories: dict) -> str:
+    lines = ["## Section 8 — Gradient Diagnostics\n\n"]
+    lines.append("_Metrics only present in runs trained with Step 8 gradient logging._\n\n")
+
+    # 8a — Per-task gradient norm mean
+    lines.append("### 8a — Mean Per-Task Gradient Norm\n\n")
+    header = "| Config | " + " | ".join(f"grad_norm_{t}" for t in TASKS) + " |\n"
+    sep    = "|--------|" + "|".join("---" for _ in TASKS) + "|\n"
+    lines.append(header)
+    lines.append(sep)
+
+    for run_name in sorted(runs.keys()):
+        traj = trajectories.get(run_name, {})
+        vals = []
+        for task in TASKS:
+            series = traj.get(f"task_grad_norm_{task}", [])
+            if series:
+                vals.append(fmt(float(np.mean(series))))
+            else:
+                vals.append("—")
+        lines.append(f"| {run_name} | " + " | ".join(vals) + " |\n")
+    lines.append("\n")
+
+    # 8b — Pairwise cosine similarity summary
+    PAIRS = [
+        ("mmr", "ras",  "grad_cos_mmr_ras"),
+        ("mmr", "braf", "grad_cos_mmr_braf"),
+        ("ras", "braf", "grad_cos_ras_braf"),
+    ]
+    lines.append("### 8b — Pairwise Gradient Cosine Similarity\n\n")
+    lines.append(
+        "_⚠️ = min cosine sim < −0.5 (persistent conflict). "
+        "Values absent for pre-Step-8 runs._\n\n"
+    )
+    header = "| Config | Pair | Mean cos | Min cos | Flag |\n"
+    sep    = "|--------|------|----------|---------|------|\n"
+    lines.append(header)
+    lines.append(sep)
+
+    for run_name in sorted(runs.keys()):
+        traj = trajectories.get(run_name, {})
+        for t1, t2, key in PAIRS:
+            series = traj.get(key, [])
+            if not series:
+                lines.append(f"| {run_name} | {t1}/{t2} | — | — | — |\n")
+                continue
+            mean_cos = float(np.mean(series))
+            min_cos  = float(np.min(series))
+            flag     = "⚠️" if min_cos < -0.5 else ""
+            lines.append(
+                f"| {run_name} | {t1}/{t2} "
+                f"| {fmt(mean_cos)} | {fmt(min_cos)} | {flag} |\n"
+            )
+    lines.append("\n")
+
+    return "".join(lines)
+
+
+def section_conclusions(runs: dict, trajectories: dict) -> str:
+    lines = ["## Conclusions\n\n"]
+
+    # ── Class Weighting Effect ────────────────────────────────────────────────
+    lines.append("### Class Weighting Effect\n\n")
+    lines.append("Per-task BRAF/MMR/RAS sensitivity at best epoch (unweighted → weighted):\n\n")
+    lines.append("| Config pair | Task | Sens (unw) | Sens (w) | Δ |\n")
+    lines.append("|-------------|------|-----------|---------|---|\n")
+
+    braf_crossed_50 = False
+    for base_name, weighted_name in RUN_PAIRS:
+        for task in TASKS:
+            def _sens(run_name: str, task: str) -> float | None:
+                sc = runs.get(run_name, {}).get("scalars", {})
+                traj = trajectories.get(run_name, {})
+                best_epoch = sc.get("best_epoch")
+                series = traj.get(f"val_sensitivity_{task}", [])
+                if best_epoch is None or not series:
+                    return None
+                idx = min(max(int(best_epoch) - 1, 0), len(series) - 1)
+                return series[idx]
+
+            u = _sens(base_name, task)
+            w = _sens(weighted_name, task)
+            delta = (w - u) if (u is not None and w is not None) else None
+            lines.append(
+                f"| {base_name} | {task} "
+                f"| {fmt(u)} | {fmt(w)} | {fmt(delta)} |\n"
+            )
+            if task == "braf" and w is not None and w >= 0.50:
+                braf_crossed_50 = True
+
+    lines.append("\n")
+    if braf_crossed_50:
+        lines.append(
+            "BRAF sensitivity crossed the 0.50 threshold in at least one weighted run — "
+            "class weighting is effective for the minority task.\n\n"
+        )
+    else:
+        lines.append(
+            "BRAF sensitivity did not cross 0.50 in any weighted run. "
+            "Stronger weighting or focal loss may be needed.\n\n"
+        )
+
+    # ── RAS Val-to-Test Gap ───────────────────────────────────────────────────
+    lines.append("### RAS Val-to-Test Gap\n\n")
+    lines.append("| Config | Val AUROC (RAS) | Test AUROC (RAS) | Gap |\n")
+    lines.append("|--------|---------------|-----------------|-----|\n")
+
+    ras_gaps: dict[str, float] = {}
+    for run_name, run_info in sorted(runs.items()):
+        sc = run_info["scalars"]
+        v  = sc.get("best_val_auroc_ras")
+        t  = sc.get("test_auroc_ras")
+        gap = (v - t) if (v is not None and t is not None) else None
+        ras_gaps[run_name] = gap  # type: ignore[assignment]
+        lines.append(
+            f"| {run_name} | {fmt(v)} | {fmt(t)} | {fmt(gap)} |\n"
+        )
+    lines.append("\n")
+
+    # Compare unweighted vs weighted gap
+    for base_name, weighted_name in RUN_PAIRS:
+        ug = ras_gaps.get(base_name)
+        wg = ras_gaps.get(weighted_name)
+        if ug is not None and wg is not None:
+            if wg < ug:
+                lines.append(
+                    f"Weighting narrows the RAS val-to-test gap for `{base_name}`: "
+                    f"{fmt(ug)} → {fmt(wg)} ({fmt(wg - ug)}).\n\n"
+                )
+            else:
+                lines.append(
+                    f"Weighting does not narrow the RAS gap for `{base_name}` "
+                    f"({fmt(ug)} → {fmt(wg)}).\n\n"
+                )
+
+    # ── MMR Regularization Hypothesis ────────────────────────────────────────
+    lines.append("### MMR Regularization Hypothesis\n\n")
+
+    from stability_ablation import compute_stability_metrics  # already imported at top
+
+    phase4_vl_rise = 0.021
+    for run_name in sorted(runs.keys()):
+        traj  = trajectories.get(run_name, {})
+        auroc = traj.get("val_auroc_mmr", [])
+        loss  = traj.get("val_loss_mmr", [])
+        stab  = compute_stability_metrics(auroc, loss)
+        vl    = stab.get("val_loss_rise")
+        lines.append(
+            f"- `{run_name}` vl_rise_mmr = {fmt(vl, 3)} "
+            f"(Phase 4 single-task = {phase4_vl_rise})\n"
+        )
+    lines.append("\n")
+
+    # ── Gradient Conflict ─────────────────────────────────────────────────────
+    lines.append("### Gradient Conflict\n\n")
+    PAIRS = [
+        ("mmr", "ras",  "grad_cos_mmr_ras"),
+        ("mmr", "braf", "grad_cos_mmr_braf"),
+        ("ras", "braf", "grad_cos_ras_braf"),
+    ]
+    any_conflict = False
+    for run_name in sorted(runs.keys()):
+        traj = trajectories.get(run_name, {})
+        for t1, t2, key in PAIRS:
+            series = traj.get(key, [])
+            if series and float(np.mean(series)) < -0.5:
+                lines.append(
+                    f"- ⚠️ `{run_name}`: {t1}/{t2} mean cosine sim = {fmt(float(np.mean(series)))} "
+                    f"— persistent gradient conflict.\n"
+                )
+                any_conflict = True
+    if not any_conflict:
+        lines.append(
+            "No task pair shows mean gradient cosine similarity < −0.5 across the full run. "
+            "Gradients are orthogonal or cooperative.\n"
+        )
+    lines.append("\n")
+
+    # ── Recommended Config for Phase 6 ───────────────────────────────────────
+    lines.append("### Recommended Config for Phase 6\n\n")
+
+    best_run   = None
+    best_score = -1.0
+    for run_name, run_info in runs.items():
+        sc = run_info["scalars"]
+        test_vals = [sc.get(f"test_auroc_{t}") for t in TASKS]
+        if not all(v is not None for v in test_vals):
+            continue
+        mean_test = float(np.mean(test_vals))
+
+        traj  = trajectories.get(run_name, {})
+        sc_   = run_info["scalars"]
+        be    = sc_.get("best_epoch")
+        braf_sens = None
+        if be is not None:
+            bseries = traj.get("val_sensitivity_braf", [])
+            if bseries:
+                idx = min(max(int(be) - 1, 0), len(bseries) - 1)
+                braf_sens = bseries[idx]
+
+        loss  = traj.get("val_loss", [])
+        auroc = traj.get("val_auroc_mean", [])
+        stab  = compute_stability_metrics(auroc, loss)
+        vl_rise = stab.get("val_loss_rise") or 0.0
+
+        # Composite: mean test AUROC (primary), bonus for BRAF sens >= 0.50, penalise vl_rise
+        score = mean_test + (0.01 if (braf_sens is not None and braf_sens >= 0.50) else 0.0) - vl_rise * 0.1
+        if score > best_score:
+            best_score = score
+            best_run   = run_name
+
+    if best_run:
+        sc = runs[best_run]["scalars"]
+        test_vals = [sc.get(f"test_auroc_{t}") for t in TASKS]
+        mean_test = float(np.mean([v for v in test_vals if v is not None])) if test_vals else None
+        lines.append(
+            f"**Recommended**: `{best_run}` "
+            f"(mean test AUROC = {fmt(mean_test)}, composite score = {fmt(best_score)}).\n\n"
+            f"Build Phase 6 ABMIL from this config.\n\n"
+        )
+    else:
+        lines.append("_Insufficient data to recommend a config — re-run after all runs complete._\n\n")
 
     return "".join(lines)
 

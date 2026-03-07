@@ -1,0 +1,51 @@
+# Phase 6 multitask config — mean pool + sinusoidal PE, cosine LR, grad accum 16
+# Identical to config_multitask_mean.yaml except positional_encoding=sinusoidal.
+# Tests whether PE alone (without ABMIL) improves transformer self-attention.
+
+paths:
+  embeddings_dir: "/mnt/data-surgen/embeddings/"
+  data_dir: "data/splits/"
+  models_dir: "models/"
+  logs_dir: "logs/mlflow"
+  results_dir: "results/"
+
+data:
+  embedding_dim: 1024
+  train_split: "SurGen_multitask_train.csv"
+  val_split: "SurGen_multitask_validate.csv"
+  test_split: "SurGen_multitask_test.csv"
+  tasks: [mmr, ras, braf]
+  slide_id_column: "case_id"
+
+model:
+  input_dim: 1024
+  hidden_dim: 512
+  transformer_layers: 2
+  num_heads: 2
+  ffn_dim: 2048
+  dropout: 0.15
+  layer_norm_eps: 1.0e-5
+  aggregation: "mean"
+  positional_encoding: "sinusoidal"
+  model_type: "MultiMILTransformer"
+  output_classes: 3
+
+training:
+  epochs: 150
+  lr: 1.0e-5
+  batch_size: 1
+  optimizer: "adam"
+  random_seed: 1
+  save_every: 20
+  lr_scheduler: "cosine"
+  class_weighting: true
+  grad_accum_steps: 16
+  early_stopping_patience: 25
+
+mlflow:
+  experiment_name: "multitask-surgen-phase6"
+  tracking_uri: "sqlite:///mlflow.db"
+  run_name: "multitask-mean-pe-cosine-accum16"
+
+evaluation:
+  thresholds: [0.25, 0.50, 0.75]

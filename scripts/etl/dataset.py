@@ -19,6 +19,44 @@ import torch
 from torch.utils.data import Dataset
 
 
+def get_grid_shape(zarr_path: str) -> tuple[int, int]:
+    """Return (H, W) grid dimensions from a Zarr store's coords array.
+
+    Args:
+        zarr_path: Path to a .zarr directory containing a 'coords' array of
+                   shape (N, 2) with (row, col) patch indices.
+    Returns:
+        (H, W) tuple where H = max_row + 1 and W = max_col + 1.
+    """
+    import zarr
+    store = zarr.open(zarr_path, mode="r")
+    coords = store["coords"][:]  # (N, 2) int64
+    H = int(coords[:, 0].max()) + 1
+    W = int(coords[:, 1].max()) + 1
+    return H, W
+
+
+def mil_collate_fn(batch):
+    """Collate function for MIL DataLoaders (always batch_size=1).
+
+    Identical to default_collate except that None coords (from .pt files)
+    are preserved as None rather than causing a collate error.
+    Tensors are unsqueezed to add the batch dimension.
+    Strings are wrapped in a list to match default_collate behaviour.
+    """
+    assert len(batch) == 1, "MIL training requires batch_size=1"
+    item = batch[0]
+    result = []
+    for elem in item:
+        if isinstance(elem, torch.Tensor):
+            result.append(elem.unsqueeze(0))
+        elif elem is None:
+            result.append(None)
+        else:
+            result.append([elem])  # strings → list, matches default_collate
+    return tuple(result)
+
+
 class MILDataset(Dataset):
     """MIL dataset that lazily loads one slide embedding per __getitem__ call.
 
@@ -53,17 +91,22 @@ class MILDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str, object]:
         row = self.df.iloc[idx]
         slide_id = str(row[self.slide_id_col])
         label = torch.tensor(float(row[self.label_col]), dtype=torch.float32)
-        embeddings = self._load_embedding(slide_id)
-        return embeddings, label, slide_id
+        embeddings, coords = self._load_embedding(slide_id)
+        return embeddings, label, slide_id, coords
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _load_embedding(self, slide_id: str) -> torch.Tensor:
-        """Resolve path and dispatch to the correct loader by file extension."""
+    def _load_embedding(self, slide_id: str) -> Tuple[torch.Tensor, object]:
+        """Resolve path and dispatch to the correct loader by file extension.
+
+        Returns:
+            (embeddings, coords) where coords is a (N, 2) long tensor for Zarr
+            files, or None for .pt files.
+        """
         zarr_path = Path(f"{self.embeddings_dir}/{slide_id}.zarr")
         pt_path   = Path(f"{self.embeddings_dir}/{slide_id}.pt")
 
@@ -72,8 +115,10 @@ class MILDataset(Dataset):
         if pt_path.exists():
             pt = str(pt_path)
             if pt.startswith("gs://"):
-                return self._load_gcs(pt)
-            return torch.load(pt, map_location="cpu", weights_only=True)
+                emb = self._load_gcs(pt)
+            else:
+                emb = torch.load(pt, map_location="cpu", weights_only=True)
+            return emb, None
 
         # SR386 fallback: CSV IDs like 'SR386_40X_HE_T1' map to server Zarr
         # filenames 'SR386_40X_HE_T001_01.zarr' (zero-padded, _01 suffix).
@@ -101,10 +146,14 @@ class MILDataset(Dataset):
             return f"{m.group(1)}{int(m.group(2)):03d}_01"
         return slide_id
 
-    def _load_zarr(self, path: str) -> torch.Tensor:
+    def _load_zarr(self, path: str) -> Tuple[torch.Tensor, object]:
         """Load pre-extracted UNI embeddings from a Zenodo-format Zarr store.
 
-        The store must contain a 'features' array of shape (N_patches, 1024).
+        The store must contain a 'features' array of shape (N_patches, 1024)
+        and optionally a 'coords' array of shape (N_patches, 2).
+
+        Returns:
+            (features, coords) where coords is a (N, 2) long tensor or None.
         """
         try:
             import zarr
@@ -114,10 +163,15 @@ class MILDataset(Dataset):
                 "Install with: pip install zarr"
             )
         store = zarr.open(path, mode="r")
-        return torch.from_numpy(store["features"][:]).to(torch.float32)
+        features = torch.from_numpy(store["features"][:]).to(torch.float32)
+        coords = torch.from_numpy(store["coords"][:]).to(torch.long) if "coords" in store else None
+        return features, coords
 
     def _load_gcs(self, gcs_path: str) -> torch.Tensor:
-        """Load a .pt file directly from GCS without a local temp file."""
+        """Load a .pt file directly from GCS without a local temp file.
+
+        Returns only the embedding tensor (no coords for .pt files).
+        """
         try:
             import gcsfs  # noqa: F401
         except ImportError:
@@ -157,7 +211,7 @@ class MultitaskMILDataset(MILDataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         slide_id = str(row[self.slide_id_col])
-        embeddings = self._load_embedding(slide_id)
+        embeddings, coords = self._load_embedding(slide_id)
         labels, mask = [], []
         for col in self.label_cols:
             val = row[col]
@@ -170,4 +224,5 @@ class MultitaskMILDataset(MILDataset):
             torch.tensor(labels, dtype=torch.float32),
             torch.tensor(mask,   dtype=torch.float32),
             slide_id,
+            coords,
         )

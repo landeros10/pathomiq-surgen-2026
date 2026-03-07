@@ -2,138 +2,54 @@
 
 ---
 
-## Phase 0 — Close Code Gaps ✓ COMPLETED
+## Phases 0–5 ✓ COMPLETED
 
-Closed all correctness gaps before touching GCP: Zarr reader in `MILDataset`, `layer_norm_eps=1e-5` wired through config → model, AMP gated to CUDA only, official split CSVs downloaded from `CraigMyles/SurGen-Dataset`, `model_design.md` committed. Gate passed: full synthetic end-to-end train on MPS, MLflow logged cleanly.
+### Phase 0 — Code Gaps
+Fixed before GCP: Zarr reader in `MILDataset`, `layer_norm_eps=1e-5` through config, AMP gated to CUDA only, official SurGen splits downloaded. Synthetic end-to-end train on MPS passed.
 
----
+### Phase 1 — GCP Setup
+**Server:** `136.109.153.16` — Tesla T4 (15 GB), CUDA 12.8, PyTorch 2.7.1+cu128.
+**Data** (read-only): `/mnt/data-surgen/embeddings/` — 427 SR386 + 593 SR1482 Zarr embeddings.
 
-## Phase 1 — GCP Training Setup ✓ COMPLETED
+### Phase 2 — MLflow & Reproducibility
+Wired into `train.py`: seeded RNG, full config as params, `git_commit` tag, per-epoch `train_auroc`/`val_auroc`, final scalars `best_val_auroc`/`best_epoch`/`test_auroc`, confusion matrix + config YAML as artifacts.
 
-**Server:** `136.109.153.16` — Tesla T4 (15 GB), CUDA 12.8, Python 3.10.12, PyTorch 2.7.1+cu128.
+### Phase 3 — Baseline
+No Phase 3 run reached FINISHED status. Paper targets used as baseline reference: val AUROC ~0.9297, test AUROC ~0.8273.
 
-**Data** (read-only at `/mnt/data-surgen/embeddings/`): 427 SR386 + 593 SR1482 Zarr embeddings.
+### Phase 4 — Training Stability ✓ PASSED
 
-Gate passed: synthetic gate test on GCP clean, split resolution and Zarr loading verified on real data for both cohorts.
+Tested 8 intervention combinations (cosine LR × class weighting × grad accum) via successive halving (R1: 8 configs × 25 epochs; R2: top 4 × 50 epochs). R3 skipped — no AUROC gain between R1 and R2.
 
----
+**Interventions** (all config-gated, MLflow-logged):
+- Cosine LR (`CosineAnnealingLR`, `T_max=200`)
+- Class weighting (`pos_weight = n_neg / n_pos` from train split)
+- Grad accumulation (effective batch = accum_steps × 1)
 
-## Phase 2 — MLflow & Reproducibility ✓ COMPLETED
+**Best:** `mmr-surgen-s1-cosine-accum16` — val AUROC 0.9002, test AUROC **0.8640** (beats paper 0.8273), best epoch 19, vl_rise 0.021, mono_ratio 0.833.
+**Report:** `reports/2026-03-04-training-stability.md` | **MLflow experiment:** `mmr-surgen-stability` (16 FINISHED runs)
 
-Wired full reproducibility into `train.py`: seeded RNG (`random_seed: 1`), full flattened config logged as params, `git_commit` as tag, `train_auroc`/`val_auroc` per epoch, `best_val_auroc`/`best_epoch`/`test_auroc` as scalars, confusion matrix PNGs and config YAML as artifacts.
+### Phase 5 — Multitask (MMR + RAS + BRAF) ✓ PASSED
 
-Gate passed: all MLflow keys verified in UI on synthetic run.
-
----
-
-## Phase 3 — First Real Training Run ✓ COMPLETED (paper targets used as baseline reference)
-
-No Phase 3 run reached FINISHED status in MLflow (runs stalled or were superseded by Phase 4).
-Paper reproduction targets are used as the baseline reference for Phase 4 gate evaluation.
-
-| Split | Target | Achieved |
-|---|---|---|
-| Val AUROC  | ~0.9297 | n/a — paper target used as reference |
-| Test AUROC | ~0.8273 | n/a — paper target used as reference |
-
-### Steps
-
-- [ ] **Step 1 — Run baseline training**: Update run name in `config_gcp.yaml` (e.g., `mmr-uni-surgen-mean-bce-s1-baseline`), then launch via `scripts/run_train.sh`. MLflow logs `train_auroc`/`val_auroc` per epoch and `best_val_auroc`/`best_epoch`/`test_auroc` as final scalars.
-
-- [ ] **Step 2 — Create `reports/` and write baseline report**: Create `reports/` with a `.gitkeep` and add `reports/*.html` and `reports/*.png` to `.gitignore`. Write `reports/YYYY-MM-DD-phase3-baseline.md` documenting: run name, config used, val AUROC / test AUROC vs. paper targets, and MLflow run URL. This is the documented baseline against which all subsequent phases are compared.
-
----
-
-## Phase 4 — Training Stability Interventions
-
-**Goal:** Address the training instability observed in the paper (Fig. 12). Best val AUROC peaked at Epoch 56/200 with swings of ±0.2–0.3 AUROC per epoch and no sustained improvement — indicating three correctable issues: high-variance gradients (batch_size=1), severe class imbalance (92% MSS vs. 8% dMMR, unweighted), and a flat learning rate with no decay.
-
-Interventions are evaluated on the combined SurGen dataset, matching the Phase 3 baseline. The Phase 3 run (combined, no interventions) is the no-intervention baseline. The final report crosses all 8 intervention conditions in a single table.
-
-Note: an SR386-only run (using `SR386_msi_*.csv` splits) can optionally be included as a diagnostic comparator to isolate the contribution of SR1482 data from the stability improvements — but this is not the primary track.
-
-### Implementation approach
-
-All three interventions are wired into `train.py` in a single pass. Each is controlled by a config flag that defaults to the Phase 3-equivalent value, so all existing configs remain reproducible without modification. The config file is the complete specification of a run; MLflow logs every flag as a param. There is no separate script per condition — only different config files.
-
-- **Intervention A — LR scheduling** (`lr_scheduler: "cosine"` | `"none"`): `CosineAnnealingLR` with `T_max=200`. Scheduler state is saved to the checkpoint so resumed runs do not reset the annealing cycle.
-
-- **Intervention B — Class-weighted loss** (`class_weighting: true` | `false`): `pos_weight` is computed dynamically from the training split label counts (`n_negative / n_positive`) at startup — not hardcoded — so it remains correct for the combined dataset.
-
-- **Intervention C — Gradient accumulation** (`grad_accum_steps: 8` | `1`): Loss is divided by `accum_steps` before `.backward()`; `optimizer.step()` and `zero_grad()` are called every `accum_steps` slides. Effective batch size becomes 8 with no memory increase.
-
-### Steps
-
-- [x] **Step 1 — Create `scripts/studies/`**: Added `scripts/studies/.gitkeep`. This holds the one-off analysis scripts that produce dated Markdown write-ups in `reports/`. (`reports/` is created in Phase 3 Step 2.)
-
-- [x] **Step 2 — Wire interventions into `train.py`**: Added `lr_scheduler`, `class_weighting`, and `grad_accum_steps` to all three config files and `train.py` with Phase 3-equivalent defaults. Checkpoints now saved as `{"model": ..., "scheduler": ...}` dicts with backward-compatible load. Each param logged to MLflow. Smoke tests pass (4/4).
-
-### Successive Halving Schedule
-
-| Round | Configs | `epochs` | `early_stopping_patience` | Status |
-|-------|---------|----------|--------------------------|--------|
-| 1     | 8 (all) | 25       | 10                       | ✓ Complete — top 4 carried forward |
-| 2     | top 4   | 50       | 15                       | ✓ Complete — no improvement over R1 peak |
-| 3     | best 1  | 100      | 20                       | **Skipped** — R2 showed no AUROC gain vs R1; not still improving at epoch 50 |
-
-All rounds use the same seed and combined SurGen dataset. Each round is a separate set of MLflow runs so partial results are queryable at any point.
-
-- [x] **Step 3 — Generate 8 config files**: Created all 8 Round 1 condition configs in `configs/studies/`: `config_surgen_none.yaml`, `config_surgen_cosine.yaml`, `config_surgen_weighted.yaml`, `config_surgen_accum.yaml`, `config_surgen_cosine_weighted.yaml`, `config_surgen_cosine_accum.yaml`, `config_surgen_weighted_accum.yaml`, `config_surgen_all.yaml`. Added `scripts/run_stability_study.sh` to run all 8 sequentially on GCP. Added `--max-epochs` CLI arg to `train.py` and `scripts/preflight_study.sh` to validate each config end-to-end (data load → forward → loss → checkpoint → MLflow) with 1 epoch before the overnight run. Runs logged with `-preflight` suffix.
-
-- [x] **Step 4 — Combined-data runs (8 runs)**: Preflight passed. R1 (8 conditions, 25 epochs) and R2 (top 4, 50 epochs) completed on GCP. MLflow experiment `mmr-surgen-stability`, 16 FINISHED runs total. Note: R2 was initially run with a bug that capped epochs at 25; corrected R2 re-runs completed the full 50 epochs.
-
-- [x] **Step 5 — Report**: `scripts/studies/stability_ablation.py` written and executed. Report at `reports/2026-03-04-training-stability.md`. Includes full condition table with stability metrics (monotonicity ratio, reversals, val-loss rise), val AUROC + loss curves per condition (R1 and R2), stable candidates table (vl_rise ≤ 0.10), and R1→R2 delta analysis.
-
-### Gate: before moving to Phase 5 ✓ PASSED
-
-**Best condition**: `mmr-surgen-s1-cosine-accum16` — val AUROC 0.9002, test AUROC **0.8640** (vs. paper target 0.8273 ✓), best epoch 19 (later and smoother than the paper's epoch 56 peak with ±0.2–0.3 swings). Monotonicity ratio 0.833, vl_rise 0.021 (well below 0.10 threshold — no overfitting signal). Results written to `reports/`. **Round 3 skipped** — corrected 50-epoch R2 re-runs confirmed Δauroc=0.0000 for all R1→R2 comparisons; best checkpoints at epochs 12–19 show the conditions had already converged well before the epoch limit.
-
----
-
-## Phase 5 — Multitask Validation (MMR + RAS + BRAF)
-
-**Goal:** Confirm the baseline architecture generalizes beyond a single task by training one model that jointly predicts MMR, RAS (KRAS|NRAS), and BRAF from a shared encoder with three output heads. If the model cannot learn multiple tasks at this capacity, adding architectural complexity will not fix it.
-
-**Model:** Shared `MultiMILTransformer` encoder → three independent linear heads, one per task. All slides with at least one valid label are included in training; per-task BCE loss is computed only for heads where a label is present (masked for missing tasks). No `pos_weight` on any head.
-
-**Label source:** Official SurGen dataset splits (CraigMyles/SurGen-Dataset).
-RAS derived as KRAS|NRAS union for both cohorts (consistent methodology).
-
-**Metric:** Per-task AUROC (same as Phase 3/4, consistent with paper).
-
+**Architecture:** `MultiMILTransformer` — shared encoder → 3 independent linear heads. Masked per-task BCE (NaN labels skipped). Early stopping on mean val AUROC.
+**Splits:** `SurGen_multitask_{train,validate,test}.csv` (case_id outer-join). Train=496, val=165, test=165. RAS = KRAS|NRAS union.
+**Class dist (train pos%):** MMR ~10%, RAS ~44%, BRAF ~14%.
 **MLflow experiment:** `multitask-surgen`
 
-**Variants:** Two configs, both now multitask:
-- **Base** (`config_gcp.yaml` style): lr=1e-4, no scheduler, grad_accum=1, 100 epochs
-- **Winning stability config** (`mmr-surgen-s1-cosine-accum16` style): lr=1e-5, cosine LR, grad_accum=16, 50 epochs, early_stopping_patience=15
+**Results (4 runs):**
 
-This yields **2 runs total**: `multitask-base`, `multitask-cosine-accum16`.
+| Config | MMR test AUROC | RAS test AUROC | BRAF test AUROC | mean |
+|--------|---------------|---------------|----------------|------|
+| multitask-base | 0.8931 | 0.6645 | 0.8342 | 0.7973 |
+| multitask-base-weighted | 0.7838 | 0.5996 | 0.7794 | 0.7209 |
+| multitask-cosine-accum16 | 0.8782 | 0.6195 | 0.8122 | 0.7700 |
+| multitask-cosine-accum16-weighted | 0.8476 | 0.6453 | 0.8172 | 0.7700 |
 
-**Class distribution (train/val/test valid N, pos%):** MMR 490/165/165 ~10%/9%/9%; RAS 489/165/164 ~44%/42%/41%; BRAF 448/154/154 ~14%/13%/14%.
+**Class weighting effect (BRAF sensitivity):** base 0.30→0.60, cosine-accum16 0.35→**0.75** (target >0.50 met).
+**Gradient conflict:** `multitask-base-weighted` ras/braf min cos −0.61 ⚠️; `multitask-cosine-accum16-weighted` clean (all pairs > −0.38).
+**Report:** `reports/2026-03-06-phase5-results.md` (`scripts/studies/phase5_multitask_report.py`)
 
-### Steps
-
-- [x] **Step 1 — Define task and labels**: Label source and AUROC metric confirmed. RAS = KRAS|NRAS union.
-- [x] **Step 2 — Add single-task splits** *(superseded)*: Per-task CSVs generated then deleted in favour of unified multitask splits.
-- [x] **Step 3 — Build multitask splits**: `scripts/etl/build_multitask_splits.py` outer-joins MMR/RAS/BRAF per `case_id` → `SurGen_multitask_{train,validate,test}.csv` (cols: `case_id`, `slide_id`, `label_mmr`, `label_ras`, `label_braf`; NaN where task missing). Train=496, val=165, test=165. All assertions passed. Superseded `SurGen_{braf,ras}_*.csv` and `build_combined_splits.py` deleted.
-- [x] **Step 4 — Config changes**: `configs/phase5/config_multitask_base.yaml` (lr=1e-4, accum=1) and `config_multitask_cosine_accum16.yaml` (lr=1e-5, cosine, accum=16). Both include `model_type: "MultiMILTransformer"`, `output_classes: 3`, `tasks: [mmr, ras, braf]`.
-- [x] **Step 5 — Implement `MultiMILTransformer` and update `train.py`**: `MultiMILTransformer` added to `scripts/models/mil_transformer.py` (same encoder/pool as `MILTransformer`, `Linear(hidden_dim, output_classes)` output). `MultitaskMILDataset` added to `scripts/etl/dataset.py` (returns `valid_mask` tensor, NaN → 0). `train.py` branches on `output_classes > 1`: masked per-task BCE loss, per-epoch per-task AUROC/AUPRC/F1/sensitivity/specificity + head weight variance logged, early stopping on mean val AUROC, final keys `best_val_auroc_mean`/`test_auroc_{task}` (no `best_val_auroc` for multitask). Single-task path unchanged. Smoke test passes.
-- [x] **Step 6a — Preflight**: `scripts/run_phase5.sh --preflight` runs both configs for 1 epoch each. `scripts/verify_preflight_multitask_surgen.py` confirms FINISHED status, all 34 per-task metrics present, losses positive/finite, AUROCs in [0,1], and log tails clean.
-- [x] **Step 6b — Full training on GCP**: Both configs completed. `multitask-base` best epoch 5, `multitask-cosine-accum16` best epoch 29. MLflow experiment `multitask-surgen`, 2 FINISHED runs.
-- [x] **Step 7 — First report draft**: `scripts/studies/phase5_multitask_report.py` written and executed. Report at `reports/2026-03-05-phase5-results.md`. Includes per-task results table, Phase 4 reference comparison, stability tables (4 metrics groups), class imbalance / sensitivity analysis, 6 figures, conclusions, and 10 decision-making questions with suggested answers.
-- [x] **Step 8 — Per-head class weighting + gradient diagnostics**: Added per-head `pos_weight` to the multitask BCE loss in `train.py`, computed from training split label counts at startup. Two new configs: `configs/phase5/config_multitask_base_weighted.yaml` and `config_multitask_cosine_accum16_weighted.yaml` (same as originals but `class_weighting: true`). `run_phase5.sh` now accepts `--weighted` flag (order-independent with `--preflight`). Per-task gradient norms (`task_grad_norm_{t}`) and pairwise cosine similarities (`grad_cos_{t1}_{t2}`) at the final shared transformer layer logged to MLflow each epoch via `_compute_grad_diagnostics`. Server-side after git pull: `nohup ./scripts/run_phase5.sh --weighted > logs/phase5/orchestrator_weighted.log 2>&1 & tail -f logs/phase5/orchestrator_weighted.log`
-- [ ] **Step 9 — Weighted run report + RAS stratification check**: Re-run `scripts/studies/phase5_multitask_report.py` against all four runs (`multitask-base`, `multitask-cosine-accum16`, and both `-weighted` variants). Flag any run where a task-pair gradient cosine similarity is consistently below −0.5. Verify RAS label prevalence in val vs. test splits and note whether the val-to-test AUROC gap persists after weighting.
-
-### Gate: before moving to Phase 6 ✓ PASSED
-
-| Task | multitask-base test AUROC | multitask-cosine-accum16 test AUROC |
-|------|--------------------------|--------------------------------------|
-| MMR  | 0.8931 | 0.8782 |
-| RAS  | 0.6645 | 0.6195 |
-| BRAF | 0.8342 | 0.8122 |
-| mean | 0.7973 | 0.7700 |
-
-Winning config: `multitask-cosine-accum16` (stable training, vl_rise 6× lower on mean, 15× lower on BRAF; base config's higher test AUROC attributed to checkpoint timing, not meaningful superiority). RAS is the weakest head: test AUROC 0.62–0.66, val-to-test gap ~7–8 points, vl_rise=1.22 in base config. BRAF sensitivity collapses to 0.30–0.35 at threshold 0.5 due to absent `pos_weight`. MMR competitive with Phase 4 single-task (test AUROC 0.8782 vs. 0.8640); regularization hypothesis unconfirmed — requires epoch-matched vl_rise comparison. `multitask-cosine-accum16` is the base for all further multitask development.
+**Winning config: `multitask-cosine-accum16`** — stable training (vl_rise 6× lower on mean, 15× lower on BRAF), no gradient conflict, mean test AUROC 0.7700. Base config's slightly higher AUROC attributed to checkpoint timing, not real superiority. MMR competitive with Phase 4 single-task (0.8782 vs 0.8640). RAS weakest head: val-to-test gap ~7–8 pp, vl_rise 1.22 in base. Regularization hypothesis (multitask → lower MMR vl_rise) unconfirmed — requires epoch-matched comparison in Phase 6.
 
 ---
 
@@ -147,17 +63,11 @@ Winning config: `multitask-cosine-accum16` (stable training, vl_rise 6× lower o
 
 ### Steps
 
-- [ ] **Step 1 — Verify RAS val/test stratification**: Before any architecture change, confirm the val and test splits are stratified on the RAS label. Compute RAS positive rate in each split and check against train (44%). If unstratified, rebuild splits with stratification before proceeding. A 7–8 point val-to-test gap on RAS is a data problem, not a model problem.
+- [x] **Step 1 — Verify RAS val/test stratification**: train 44.2%, val 41.8%, test 40.9% — all gaps ≤ 3.3 pp, splits are adequately stratified. No rebuild needed.
 
-- [ ] **Step 2 — Per-head class weighting + loss reweighting**: Extend the existing `pos_weight` logic (already implemented for single-task) to the multitask path: compute `pos_weight_t = (1 - prev_t) / prev_t` per head from the training split label counts at startup. Weight task losses by `1/prevalence` normalized to sum to 1 (MMR ≈ 0.45, BRAF ≈ 0.32, RAS ≈ 0.10 after normalization — or tune empirically). Log per-head `pos_weight_t` and `task_loss_weight_t` as MLflow params.
+- [~] **Step 2 — Per-head class weighting + loss reweighting**: Deferred. Phase 5 weighted runs showed BRAF sensitivity 0.75 already; will revisit if needed after Step 6 results.
 
-- [ ] **Step 3 — ABMIL aggregation in `MultiMILTransformer`**: Replace `x.mean(dim=1)` with a learned attention pool:
-  ```python
-  # attn_pool: nn.Linear(hidden_dim, 1, bias=False)
-  weights = torch.softmax(self.attn_pool(x), dim=1)   # (B, N, 1)
-  pooled  = (weights * x).sum(dim=1)                   # (B, hidden_dim)
-  ```
-  Gate with `aggregation: "attention"` vs `"mean"` in config so Phase 5 runs remain reproducible. Apply the same change to `MILTransformer` (single-task path). Log `aggregation` as MLflow param. Return `weights` from `forward()` for later visualization.
+- [x] **Step 3 — ABMIL aggregation in `MultiMILTransformer` (Option B — task-specific L2)**: Implemented `aggregation: "attention"` gate in both `MILTransformer` and `MultiMILTransformer` (`scripts/models/mil_transformer.py`). Architecture: shared `attn_l1 = Linear(hidden_dim, attn_hidden_dim) + GELU` learns a general patch-importance representation; task-specific `attn_l2 = Linear(attn_hidden_dim, T)` produces T independent attention distributions (+258 params over shared-L2). Classifier is `nn.ModuleList` of T independent `Linear(hidden_dim, 1)` heads. `forward(return_weights=True)` returns `(logits, weights)` where weights shape is `(B, N, T)`. `train.py` threads `aggregation` + `attn_hidden_dim` from config; logs `attn_variant: "task-specific-L2"` to MLflow. Phase 6 config: `configs/phase6/config_multitask_abmil.yaml` (aggregation=attention, attn_hidden_dim=128, cosine LR, accum=16).
 
 - [ ] **Step 4 — Patch coordinate extraction**: The Zarr embeddings are stored in row-major order. Add a `get_grid_shape(zarr_path)` utility returning `(H, W)` from Zarr metadata or patch count. Emit `(row, col)` indices alongside embeddings from `MultitaskMILDataset`. Required for Step 7 attention heatmaps.
 

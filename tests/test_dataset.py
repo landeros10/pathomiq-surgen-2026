@@ -13,7 +13,7 @@ class TestZarrLoading:
     def test_direct_slide_loads(self, zarr_emb_dir, split_csv, tmp_path):
         """SLIDE_DIRECT resolves immediately without any ID transform."""
         ds = MILDataset(str(split_csv), str(zarr_emb_dir), label_col="label", slide_id_col="case_id")
-        emb, label, sid = ds[0]
+        emb, label, sid, coords = ds[0]
         assert sid == "SLIDE_DIRECT"
         assert emb.shape == (50, 1024)
         assert emb.dtype == torch.float32
@@ -21,7 +21,7 @@ class TestZarrLoading:
     def test_sr386_padding_fallback(self, zarr_emb_dir, split_csv):
         """Un-padded SR386 CSV ID resolves to the zero-padded server Zarr filename."""
         ds = MILDataset(str(split_csv), str(zarr_emb_dir), label_col="label", slide_id_col="case_id")
-        emb, label, sid = ds[1]
+        emb, label, sid, coords = ds[1]
         assert sid == "SR386_40X_HE_T5"
         assert emb.shape == (30, 1024)
 
@@ -44,14 +44,14 @@ class TestZarrLoading:
     def test_label_dtype_and_value(self, zarr_emb_dir, split_csv):
         """Label is float32 tensor with the correct value from the CSV."""
         ds = MILDataset(str(split_csv), str(zarr_emb_dir), label_col="label", slide_id_col="case_id")
-        _, label, _ = ds[1]   # MSI slide, label=1
+        _, label, _, _ = ds[1]   # MSI slide, label=1
         assert label.dtype == torch.float32
         assert label.item() == 1.0
 
     def test_case_id_column_used_not_slide_id(self, zarr_emb_dir, split_csv):
         """slide_id column contains wrong sequential values; case_id must be used."""
         ds = MILDataset(str(split_csv), str(zarr_emb_dir), label_col="label", slide_id_col="case_id")
-        _, _, sid = ds[0]
+        _, _, sid, _ = ds[0]
         assert sid == "SLIDE_DIRECT"   # not "slide_0"
 
     def test_len(self, zarr_emb_dir, split_csv):
@@ -65,7 +65,8 @@ class TestPtLoading:
         csv = tmp_path / "pt.csv"
         pd.DataFrame({"case_id": ["SLIDE_PT"], "label": [0]}).to_csv(csv, index=False)
         ds = MILDataset(str(csv), str(pt_emb_dir), label_col="label", slide_id_col="case_id")
-        emb, label, sid = ds[0]
+        emb, label, sid, coords = ds[0]
         assert sid == "SLIDE_PT"
         assert emb.shape == (40, 1024)
         assert emb.dtype == torch.float32
+        assert coords is None  # .pt files have no coords

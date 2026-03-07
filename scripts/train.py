@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.etl.dataset import MILDataset, MultitaskMILDataset
+from scripts.etl.dataset import MILDataset, MultitaskMILDataset, mil_collate_fn
 from scripts.models.mil_transformer import MILTransformer, MultiMILTransformer
 from scripts.utils.metrics import compute_auprc, metrics_at_threshold
 from scripts.utils.mlflow_utils import log_confusion_matrix, log_metrics_at_thresholds
@@ -86,7 +86,7 @@ def train_one_epoch(
     losses, probs, labels_out = [], [], []
     amp_enabled = device.type == "cuda"
     optimizer.zero_grad()
-    for step, (embeddings, labels, _) in enumerate(loader):
+    for step, (embeddings, labels, slide_id, coords) in enumerate(loader):
         embeddings, labels = embeddings.to(device), labels.to(device)
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
             logits = model(embeddings)
@@ -121,7 +121,7 @@ def evaluate(
     losses, probs, labels_out = [], [], []
     amp_enabled = device.type == "cuda"
     with torch.no_grad():
-        for embeddings, labels, _ in loader:
+        for embeddings, labels, slide_id, coords in loader:
             embeddings, labels = embeddings.to(device), labels.to(device)
             with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
                 logits = model(embeddings)
@@ -143,10 +143,14 @@ def _compute_grad_diagnostics(model, sample_batch, task_criteria, device, tasks)
     """
     model.eval()
     amp_enabled = device.type == "cuda"
-    embeddings, labels, valid_mask, _ = sample_batch
+    embeddings, labels, valid_mask, slide_id, coords = sample_batch
     embeddings  = embeddings.to(device)
     labels      = labels.to(device)
     valid_mask  = valid_mask.to(device)
+    if isinstance(coords, list):
+        coords = None
+    elif coords is not None:
+        coords = coords.to(device)
 
     final_layer_params = list(model.transformer.layers[-1].parameters())
     task_grads: dict = {}
@@ -156,7 +160,7 @@ def _compute_grad_diagnostics(model, sample_batch, task_criteria, device, tasks)
             continue
         model.zero_grad()
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
-            logits = model(embeddings)
+            logits = model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)
             loss   = task_criteria[i](logits[:, i], labels[:, i])
         loss.backward()
         grads = [p.grad.detach().flatten() for p in final_layer_params if p.grad is not None]
@@ -195,13 +199,17 @@ def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
     optimizer.zero_grad()
     amp_enabled = device.type == "cuda"
 
-    for step, (embeddings, labels, valid_mask, _) in enumerate(loader):
+    for step, (embeddings, labels, valid_mask, slide_id, coords) in enumerate(loader):
         embeddings = embeddings.to(device)
         labels     = labels.to(device)       # (1, n_tasks)
         valid_mask = valid_mask.to(device)   # (1, n_tasks)
+        if isinstance(coords, list):
+            coords = None
+        elif coords is not None:
+            coords = coords.to(device)
 
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
-            logits = model(embeddings)  # (1, n_tasks)
+            logits = model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)  # (1, n_tasks)
             step_loss = torch.tensor(0.0, device=device)
             for i, t in enumerate(tasks):
                 mask_i = valid_mask[:, i].bool()
@@ -260,12 +268,16 @@ def evaluate_multitask(model, loader, criteria, device, tasks):
     amp_enabled = device.type == "cuda"
 
     with torch.no_grad():
-        for embeddings, labels, valid_mask, _ in loader:
+        for embeddings, labels, valid_mask, slide_id, coords in loader:
             embeddings = embeddings.to(device)
             labels     = labels.to(device)
             valid_mask = valid_mask.to(device)
+            if isinstance(coords, list):
+                coords = None
+            elif coords is not None:
+                coords = coords.to(device)
             with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
-                logits    = model(embeddings)
+                logits = model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)
                 step_loss = torch.tensor(0.0, device=device)
                 for i, t in enumerate(tasks):
                     mask_i = valid_mask[:, i].bool()
@@ -338,11 +350,16 @@ def main(
                 label_col=cfg["data"]["label_column"],
                 slide_id_col=cfg["data"]["slide_id_column"],
             )
-        return DataLoader(ds, batch_size=1, shuffle=shuffle)
+        return DataLoader(ds, batch_size=1, shuffle=shuffle, collate_fn=mil_collate_fn)
 
     train_loader = make_loader("train_split", shuffle=True)
     val_loader   = make_loader("val_split",   shuffle=False)
     test_loader  = make_loader("test_split",  shuffle=False)
+
+    aggregation = mc.get("aggregation", "mean")
+    attn_variant = mc.get("attn_variant", "split")
+    attn_hidden_dim = mc.get("attn_hidden_dim", 128)
+    positional_encoding = mc.get("positional_encoding", "none")
 
     if multitask:
         model = MultiMILTransformer(
@@ -354,6 +371,10 @@ def main(
             dropout=mc["dropout"],
             layer_norm_eps=mc["layer_norm_eps"],
             output_classes=output_classes,
+            aggregation=aggregation,
+            attn_variant=attn_variant,
+            attn_hidden_dim=attn_hidden_dim,
+            positional_encoding=positional_encoding,
         ).to(device)
     else:
         model = MILTransformer(
@@ -364,6 +385,9 @@ def main(
             ffn_dim=mc["ffn_dim"],
             dropout=mc["dropout"],
             layer_norm_eps=mc["layer_norm_eps"],
+            aggregation=aggregation,
+            attn_hidden_dim=attn_hidden_dim,
+            positional_encoding=positional_encoding,
         ).to(device)
 
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
@@ -466,6 +490,10 @@ def main(
             "grad_accum_steps":          accum_steps,
             "early_stopping_patience":   early_stopping_patience,
         }
+        extra["positional_encoding"] = positional_encoding
+        if aggregation == "attention":
+            extra["attn_hidden_dim"] = attn_hidden_dim
+            extra["attn_variant"]    = attn_variant
         if class_weighting and not multitask:
             extra["pos_weight"] = round(_n_neg / _n_pos, 4)
         if class_weighting and multitask:
@@ -535,7 +563,7 @@ def main(
                     "learning_rate":    optimizer.param_groups[0]["lr"],
                 }
                 for i, t in enumerate(tasks):
-                    metrics[f"head_weight_var_{t}"] = model.classifier.weight[i].var().item()
+                    metrics[f"head_weight_var_{t}"] = model.classifier[i].weight.var().item()
                 for t in tasks:
                     metrics[f"train_loss_{t}"]        = train_loss_d[t]
                     metrics[f"val_loss_{t}"]           = val_loss_d[t]

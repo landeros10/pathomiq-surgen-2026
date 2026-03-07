@@ -27,8 +27,8 @@ class TestArchitecture:
 
     def test_classifier_dim(self, model):
         """Classifier head: 512 → 1 (binary logit)."""
-        assert model.classifier.in_features == 512
-        assert model.classifier.out_features == 1
+        assert model.classifier[0].in_features == 512
+        assert model.classifier[0].out_features == 1
 
 
 class TestForwardPass:

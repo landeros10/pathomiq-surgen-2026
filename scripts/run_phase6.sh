@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --preflight)
             PREFLIGHT=1
-            EXTRA_ARGS+=(--max-epochs 1 --run-suffix preflight)
+            EXTRA_ARGS+=(--max-epochs 1 --max-samples 20 --run-suffix preflight)
             LOG_SUFFIX="_preflight"
             shift
             ;;

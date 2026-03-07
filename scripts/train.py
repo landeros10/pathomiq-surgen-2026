@@ -313,6 +313,7 @@ def main(
     run_suffix: str = None,
     max_epochs: int = None,
     patience_override: int = None,
+    max_samples: int = None,
 ) -> None:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -350,6 +351,9 @@ def main(
                 label_col=cfg["data"]["label_column"],
                 slide_id_col=cfg["data"]["slide_id_column"],
             )
+        if max_samples is not None:
+            from torch.utils.data import Subset
+            ds = Subset(ds, list(range(min(max_samples, len(ds)))))
         return DataLoader(ds, batch_size=1, shuffle=shuffle, collate_fn=mil_collate_fn)
 
     train_loader = make_loader("train_split", shuffle=True)
@@ -742,5 +746,6 @@ if __name__ == "__main__":
     parser.add_argument("--run-suffix",       default=None, help="Append -{suffix} to the run name")
     parser.add_argument("--max-epochs",       type=int, default=None, help="Cap training epochs (for preflight/debug)")
     parser.add_argument("--patience",         type=int, default=None, help="Override early_stopping_patience from config")
+    parser.add_argument("--max-samples",      type=int, default=None, help="Limit each split to N samples (for preflight/debug)")
     args = parser.parse_args()
-    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs, args.patience)
+    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs, args.patience, args.max_samples)

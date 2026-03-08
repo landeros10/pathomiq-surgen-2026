@@ -65,19 +65,51 @@ Tested 8 intervention combinations (cosine LR × class weighting × grad accum) 
 
 - [x] **Step 1 — Verify RAS val/test stratification**: train 44.2%, val 41.8%, test 40.9% — all gaps ≤ 3.3 pp, splits are adequately stratified. No rebuild needed.
 
-- [~] **Step 2 — Per-head class weighting + loss reweighting**: Deferred. Phase 5 weighted runs showed BRAF sensitivity 0.75 already; will revisit if needed after Step 6 results.
+- [~] **Step 2 — Per-head class weighting**: Folded into all Step 6 configs (`class_weighting: true`). No separate step needed.
 
-- [x] **Step 3 — ABMIL aggregation in `MultiMILTransformer` (Option B — task-specific L2)**: Implemented `aggregation: "attention"` gate in both `MILTransformer` and `MultiMILTransformer` (`scripts/models/mil_transformer.py`). Architecture: shared `attn_l1 = Linear(hidden_dim, attn_hidden_dim) + GELU` learns a general patch-importance representation; task-specific `attn_l2 = Linear(attn_hidden_dim, T)` produces T independent attention distributions (+258 params over shared-L2). Classifier is `nn.ModuleList` of T independent `Linear(hidden_dim, 1)` heads. `forward(return_weights=True)` returns `(logits, weights)` where weights shape is `(B, N, T)`. `train.py` threads `aggregation` + `attn_hidden_dim` from config; logs `attn_variant: "task-specific-L2"` to MLflow. Phase 6 config: `configs/phase6/config_multitask_abmil.yaml` (aggregation=attention, attn_hidden_dim=128, cosine LR, accum=16).
+- [x] **Step 3 — ABMIL aggregation**: `aggregation: "attention"` gated in both `MILTransformer` and `MultiMILTransformer`. Added `attn_variant: "split"` (task-specific `attn_l2: Linear(128, T)` → T independent distributions) and `"joined"` (shared `attn_l2: Linear(128, 1)` → single distribution broadcast to all tasks). `forward(return_weights=True)` returns `(logits, weights)` shape `(B, N, T)` or `(B, N, 1)`.
 
-- [ ] **Step 4 — Patch coordinate extraction**: The Zarr embeddings are stored in row-major order. Add a `get_grid_shape(zarr_path)` utility returning `(H, W)` from Zarr metadata or patch count. Emit `(row, col)` indices alongside embeddings from `MultitaskMILDataset`. Required for Step 7 attention heatmaps.
+- [x] **Step 4 — Patch coordinate extraction**: `get_grid_shape(zarr_path)` added to `dataset.py`. Both `MILDataset` and `MultitaskMILDataset` emit `(row, col)` coords as a `(N, 2)` long tensor (or `None` for `.pt` files). `mil_collate_fn` handles `None` coords without collate errors.
 
-- [ ] **Step 5 — 2D Sinusoidal Positional Encoding** *(optional, can be deferred to Phase 7)*: Without PE, attention weights have no spatial signal to attend to — patches are still exchangeable after ABMIL. Port `SinusoidalPositionalEncoding2D` from `brca_riskformer` into `scripts/models/layers.py`. Gate with `positional_encoding: "sinusoidal"` vs `"none"`. If time-constrained, run Step 6 without PE and add PE as a Phase 7 ablation.
+- [x] **Step 5 — 2D Sinusoidal Positional Encoding**: `SinusoidalPositionalEncoding2D` in `scripts/models/layers.py`. Gated via `positional_encoding: "sinusoidal"|"none"` in both model classes.
 
-- [ ] **Step 6 — GCP training run**: Train multitask with ABMIL + per-head class weights + loss reweighting, cosine LR, accum=16 (building on the Phase 5 stability winner). Compare per-task val/test AUROC, sensitivity, and vl_rise against Phase 5 `multitask-cosine-accum16`. Compare MMR vl_rise against Phase 4 single-task `mmr-surgen-s1-cosine-accum16` (0.021) — a lower multitask vl_rise is evidence for the regularization hypothesis.
+- [ ] **Step 6 — GCP training run**: 7-run experiment (`multitask-surgen-phase6`, `scripts/run_phase6.sh`), all with cosine LR, accum=16, 150 epochs, patience=25, `class_weighting=true`:
 
-- [ ] **Step 7 — Attention analysis**: For a matched set of slides (same slide evaluated under single-task MMR head and multitask MMR head), extract per-patch attention weights from ABMIL, project back onto the slide patch grid, and generate heatmap overlays. Compare: do the multitask attention maps concentrate on different tissue regions than the single-task maps? Write `scripts/studies/attention_comparison.py` → `reports/YYYY-MM-DD-phase6-attention.md` with representative figure panels. This is the primary interpretability deliverable of Phase 6.
+  | Run name | Model | aggregation | attn_variant | PE |
+  |---|---|---|---|---|
+  | `multitask-mean-cosine-accum16` | Multi | mean | — | none |
+  | `multitask-mean-pe-cosine-accum16` | Multi | mean | — | sinusoidal |
+  | `multitask-abmil-nope-cosine-accum16` | Multi | attention | split | none |
+  | `multitask-abmil-cosine-accum16` | Multi | attention | split | sinusoidal |
+  | `multitask-abmil-joined-cosine-accum16` | Multi | attention | joined | none |
+  | `multitask-abmil-joined-pe-cosine-accum16` | Multi | attention | joined | sinusoidal |
+  | `singletask-mmr-abmil-cosine-accum16` | Single | attention | — | none |
 
-- [ ] **Step 8 — Per-task gradient norm logging** *(diagnostic)*: Log cosine similarity between task gradient vectors at the final shared transformer layer at each epoch. If MMR–RAS cosine similarity is consistently near −1, the tasks are actively fighting in the backbone and GradNorm should be applied. If near 0, the shared backbone is large enough to accommodate both.
+  Compare per-task val/test AUROC, BRAF sensitivity, and MMR vl_rise vs Phase 5 `multitask-cosine-accum16` and Phase 4 single-task (0.021).
+
+- [ ] **Step 7 — Phase 6 Results Report**: Generate a Phase 6 summary report at `reports/YYYY-MM-DD-phase6-results.md` that consolidates all experimental outcomes into a single reference document before Phase 7 begins. The report must cover:
+
+  1. **7-run performance table** — val and test AUROC for each run across all three tasks (MMR, RAS, BRAF), plus BRAF sensitivity. Annotated against Phase 5 `multitask-cosine-accum16` baseline (mean val AUROC 0.821).
+
+  2. **AUPRC per task per run** — for imbalanced tasks (MMR 10%, BRAF 14%), AUROC is an insufficient ranking metric; AUPRC directly measures precision-recall tradeoff on the rare positive class and is the standard in clinical ML literature (MICCAI, Nature Medicine). Include alongside AUROC in the performance table.
+
+  3. **Bootstrap 95% confidence intervals on AUROC and AUPRC** — test set n=165 makes point estimates statistically ambiguous; 2–3 pp differences are uninterpretable without CIs. CIs are computed by resampling the 165 test examples with replacement ~1000 times using the fixed model's saved predictions (no re-training required), estimating uncertainty from finite test set size. Report CIs for the best run and the Phase 5 baseline to assess whether gains are reliable.
+
+  4. **BRAF sensitivity recovery verdict** — explicit pass/fail against the >0.50 gate, with the actual recovered value.
+
+  5. **MMR regularization hypothesis verdict** — MMR vl_rise for the best ABMIL run vs Phase 4 single-task (0.021). Explicit conclusion: does multitask training reduce overfitting on MMR?
+
+  6. **Best config identification + ablation delta table** — which aggregation / attn_variant / PE combination wins on mean val AUROC. Include a compact ablation table showing the marginal AUROC contribution of each design axis (ABMIL vs mean, PE vs none, split vs joined), isolating each variable against an otherwise identical config.
+
+  7. **Calibration (ECE)** — Expected Calibration Error for the best run per task. Uncalibrated outputs cannot support clinical decision thresholds; ECE demonstrates awareness of deployment requirements beyond ranking metrics.
+
+  8. **Attention analysis** — using checkpoints from Step 6 (`singletask-mmr-abmil` vs best multitask ABMIL run), extract per-patch attention weights, project onto the slide patch grid, and generate heatmap overlays for a matched set of slides via `scripts/studies/attention_comparison.py`. Include figures inline and state whether multitask training shifts attention toward different tissue regions vs single-task MMR.
+
+  9. **Attention weight entropy** — for all ABMIL runs, report mean per-slide attention entropy (H = −Σ wᵢ log wᵢ over patches). Low entropy indicates sparse, focal attention (pathologically interpretable); high entropy indicates diffuse weighting. Compare entropy distributions between single-task and best multitask ABMIL run to quantify whether the attention shift hypothesis holds beyond qualitative heatmaps.
+
+  10. **Task gradient conflict diagnostic** — report epoch-level cosine similarity between task gradient vectors at the final shared transformer layer. Conclude whether MMR–RAS gradients are conflicting (near −1) or orthogonal (near 0), and whether GradNorm is warranted in Phase 7.
+
+  11. **Phase 6 gate checklist** — explicitly evaluate all gates defined in the plan (mean val AUROC ≥ 0.821, BRAF sensitivity > 0.50, MMR vl_rise documented, attention figure generated). State pass/fail for each.
 
 ### Gate: before moving to Phase 7
 
@@ -123,33 +155,66 @@ RPE must show measurable improvement (>0.005 val AUROC) over Phase 6. If not, do
 
 ---
 
-## Phase 9 — Region-Level Prediction Structure
+## Phase 9 — Tissue-Adversarial Conditioning (DANN)
 
-**Goal:** Refactor the model into a true hierarchical MIL — patches are grouped into spatial regions, each region gets its own prediction, and a slide-level prediction is produced by learned attention pooling over region descriptors. This enables spatial heatmaps and weak region-level supervision.
+**Goal:** Supplement the MIL classifier with a frozen tissue-type prior derived from an external CRC patch dataset, injected via cross-attention gating. A patch-level Domain-Adversarial Neural Network (DANN) penalty then forces the transformer's learned representation to be uninformative about tissue type — compelling the encoder to focus on patterns beyond tissue composition when predicting MSI status.
 
-**This is the largest refactor.** It touches the data pipeline, model architecture, training loop, loss function, and evaluation. Complete Phases 6–8 before starting.
+**Motivation:** ABMIL attention maps from Phase 8 may reveal that the model attends to tissue type as a proxy signal for MSI (e.g., high lymphocyte density). Making tissue identity an explicit input removes any incentive for the encoder to re-derive it, while the adversarial penalty removes any incentive to retain it in the learned representation.
+
+**Two offline prerequisites must be completed and outputs committed to the repo before any GCP training run.**
+
+---
+
+### Offline Step A — Train Tissue Probe on NCT-CRC-HE-100K
+
+Train a frozen `Linear(1024, 9)` tissue-type classifier on NCT-CRC-HE-100K (Kather et al. 2018) using frozen UNI embeddings as input. NCT-CRC-HE-100K provides 100K expert-annotated H&E CRC patches across 9 tissue classes (ADI, BACK, DEB, LYM, MUC, MUS, NORM, STR, TUM) from an independent dataset — no SurGen data is touched. Commit frozen weights to `models/tissue_probe/tissue_probe.pt`.
+
+**Gate:** Per-class F1 ≥ 0.85 for TUM, STR, LYM on CRC-VAL-HE-7K holdout.
+
+**Note:** NCT-CRC-HE-100K has known color normalization artifacts. The probe serves as a soft tissue prior, not ground-truth segmentation. Document as a limitation.
+
+---
+
+### Offline Step B — Generate Tissue Embeddings for SurGen
+
+Run the frozen tissue probe on all SurGen Zarr embeddings to produce per-patch tissue probability vectors `[N, 9]`. Store alongside existing `features` and `coords` arrays. Update `MILDataset` and `MultitaskMILDataset` to optionally load tissue probs, gated by `use_tissue_prior: true/false`. When disabled, all downstream modules are bypassed and prior-phase behavior is preserved exactly.
+
+---
+
+### Architecture
+
+Three components, all gated by config:
+
+**CrossAttentionTissueGate** — injects the tissue prior into each patch token via cross-attention before the transformer. Patch tokens are the Query; the 9 tissue-class probabilities form the Key/Value sequence. Residual formulation preserves the original UNI signal. Cross-attention weights `[N, 9]` are a free per-patch tissue attribution map.
+
+**GradientReversalLayer** — standard DANN reversal layer between the encoder and adversarial head. Identity in forward; negated gradient in backward. `lambda_` annealed from 0 → 1 over training to prevent early destabilization.
+
+**Patch-level Adversarial Head** — trainable head that predicts tissue class from patch-level transformer outputs (before pooling). Tissue labels derived from the frozen probe — no manual annotation required. Discarded at inference.
+
+---
 
 ### Steps
 
-- [ ] **Step 1 — Region grouping in dataset**: Modify `MILDataset` to group patches into non-overlapping spatial regions of fixed size (e.g., 32×32 patches = 1024 patches/region). Return tensor of shape `(num_regions, patches_per_region, hidden_dim)` and a `(num_regions, 2)` region coordinate array.
+- [ ] **Step 1** — Implement `CrossAttentionTissueGate`, `GradientReversalLayer`, and adversarial head in `scripts/models/tissue_gate.py`. Unit test each component.
+- [ ] **Step 2** — Wire into `MILTransformer` / `MultiMILTransformer` behind config flags. Confirm numerical identity with Phase 8 when all new components are disabled.
+- [ ] **Step 3** — Add config keys: `use_tissue_prior`, `tissue_probe_path`, `tissue_gate`, `tissue_gate_heads`, `tissue_gate_dim`, `dann_coeff`, `dann_lambda_max`, `dann_gamma`.
+- [ ] **Step 4** — Synthetic gate test on CPU before any GCP run.
+- [ ] **Step 5** — GCP ablation (5 runs, all using best Phase 8 config):
 
-- [ ] **Step 2 — Local transformer (intra-region)**: Apply the existing `MILTransformer` transformer blocks independently to each region using `einops.rearrange` or a loop. Output: `(num_regions, hidden_dim)` region descriptors.
+  | Run | tissue_gate | dann_coeff | purpose |
+  |---|---|---|---|
+  | `phase9-baseline` | none | 0.0 | Phase 8 re-run for fair comparison |
+  | `phase9-gate-only` | cross_attention | 0.0 | isolate cross-attention contribution |
+  | `phase9-dann-only` | none | 0.1 | isolate DANN without gate |
+  | `phase9-full` | cross_attention | 0.1 | full proposal |
+  | `phase9-full-dann05` | cross_attention | 0.5 | stronger adversarial pressure |
 
-- [ ] **Step 3 — Region pooling**: Apply `GlobalPoolLayer` (max+avg, ported from `brca_riskformer`) to aggregate patch tokens within each region.
-
-- [ ] **Step 4 — Global attention (inter-region)**: Add a shallow global attention module (1–2 layers) over the `(num_regions, hidden_dim)` sequence to produce the slide-level descriptor.
-
-- [ ] **Step 5 — Dual prediction heads + regional loss**: Implement `regional_coeff` weighted loss:
-  - `global_loss = BCE(slide_pred, label) * (1 - regional_coeff)`
-  - `local_loss = BCE(top_k_region_preds, label) * regional_coeff` (top 10% of regions by confidence)
-  - Start with `regional_coeff=0.0`, sweep over `[0.0, 0.1, 0.3]`
-
-- [ ] **Step 6 — Config + MLflow**: Add `regional_coeff`, `patches_per_region`, and `arch_variant: "HierarchicalMIL"` to config and MLflow params.
-
-- [ ] **Step 7 — Gate test (local, synthetic)**: Run synthetic pipeline. Confirm shapes at every stage and that both global and region-level gradients flow.
-
-- [ ] **Step 8 — GCP training run + ablation**: Write `scripts/studies/ablation_hierarchical.py` to compare flat MIL (Phase 7) vs. hierarchical MIL. Report AUROC delta and training time increase in `reports/`.
+- [ ] **Step 6** — Tissue discriminability diagnostic: train a fresh linear probe on held-out patch-level transformer outputs and report `tissue_leakage_acc` per run. This is the primary evidence that DANN is functioning.
+- [ ] **Step 7** — Cross-attention attribution analysis: extract `[N, 9]` gate weights, project onto patch grid, compare spatial attention distribution against Phase 8 ABMIL maps. Write `scripts/studies/phase9_tissue_analysis.py`.
+- [ ] **Step 8** — Results report: `reports/YYYY-MM-DD-phase9-results.md`.
 
 ### Gate
 
-Hierarchical MIL must match or exceed Phase 7 AUROC. If it underperforms, check region size (too large/small), `regional_coeff` value, and global attention depth before concluding it does not help. Region-level heatmaps should be qualitatively more spatially coherent than Phase 8 patch-level attention maps.
+- `phase9-full` must match or exceed Phase 8 MMR AUROC.
+- `tissue_leakage_acc` must be measurably lower in `phase9-full` vs `phase9-baseline`. If not, increase `dann_coeff` before concluding the approach failed.
+- If `phase9-gate-only` matches `phase9-full`, DANN contributes nothing beyond cross-attention alone — carry only the gate forward.

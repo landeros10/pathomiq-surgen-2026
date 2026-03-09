@@ -40,6 +40,7 @@ import pandas as pd
 
 # ── Project path setup ────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts" / "models"))
 sys.path.insert(0, str(ROOT / "scripts" / "etl"))
@@ -133,7 +134,7 @@ def _load_runs(conn: sqlite3.Connection, exp_id: str) -> dict:
     ph_k = ",".join("?" * len(scalar_keys))
     scalars_df = pd.read_sql(
         f"""
-        SELECT run_uuid, key, value
+        SELECT run_uuid, key, value, step
         FROM metrics
         WHERE run_uuid IN ({ph}) AND key IN ({ph_k})
         """,

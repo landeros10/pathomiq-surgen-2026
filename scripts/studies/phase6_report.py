@@ -425,12 +425,18 @@ def plot_attention_heatmaps(
         axes[0].axis("off")
         plt.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
 
+        is_joined = (n_mt_tasks == 1)
         for ti, task in enumerate(TASKS[:n_mt_tasks]):
             w_t  = mt_w[:, ti] if mt_w.ndim == 2 else mt_w.flatten()
             grid = weights_to_grid(w_t, mt_c)
             im   = axes[1 + ti].imshow(grid, cmap="hot", aspect="equal",
                                        vmin=0, vmax=np.nanmax(grid) or 1)
-            axes[1 + ti].set_title(f"Multitask — {task.upper()}\n{best_multi_name}", fontsize=8)
+            panel_label = (
+                f"Multitask — shared (all tasks)\n{best_multi_name}"
+                if is_joined else
+                f"Multitask — {task.upper()}\n{best_multi_name}"
+            )
+            axes[1 + ti].set_title(panel_label, fontsize=8)
             axes[1 + ti].axis("off")
             plt.colorbar(im, ax=axes[1 + ti], fraction=0.046, pad=0.04)
 

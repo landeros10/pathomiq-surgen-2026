@@ -97,8 +97,9 @@ def load_data(data_dir: Path) -> dict:
                     probs[task]  = np.load(pp)
                     labels[task] = np.load(lp)
 
-            attn_weights: dict = {}
-            coords_map:   dict = {}
+            # Store paths only — arrays are loaded lazily to avoid OOM.
+            attn_paths:  dict = {}
+            coord_paths: dict = {}
             attn_dir   = run_dir / "attn"
             coords_dir = run_dir / "coords"
             for i, sid in enumerate(slide_ids):
@@ -106,15 +107,15 @@ def load_data(data_dir: Path) -> dict:
                 ap  = attn_dir   / f"{tag}.npy"
                 cp  = coords_dir / f"{tag}.npy"
                 if ap.exists():
-                    attn_weights[sid] = np.load(ap)
+                    attn_paths[sid]  = ap
                 if cp.exists():
-                    coords_map[sid] = np.load(cp)
+                    coord_paths[sid] = cp
 
             inference[run_name] = {
-                "probs":   probs,
-                "labels":  labels,
-                "weights": attn_weights,
-                "coords":  coords_map,
+                "probs":       probs,
+                "labels":      labels,
+                "attn_paths":  attn_paths,
+                "coord_paths": coord_paths,
             }
 
     return {
@@ -229,8 +230,30 @@ def compute_attn_entropy(weights: np.ndarray) -> float:
 
 
 def weights_to_grid(weights_1d: np.ndarray, coords: np.ndarray) -> np.ndarray:
-    rows = coords[:, 0].astype(int)
-    cols = coords[:, 1].astype(int)
+    """Project per-patch weights onto a 2D grid.
+
+    Coords may be raw pixel positions (large values with a fixed stride) or
+    already-normalized patch indices. Either way, we normalise by the minimum
+    non-zero inter-patch difference so the grid is always patch-sized.
+    """
+    rows_raw = coords[:, 0].astype(int)
+    cols_raw = coords[:, 1].astype(int)
+
+    # Estimate stride from minimum nonzero pairwise diff (handles both cases)
+    def _stride(vals):
+        uniq = np.unique(vals)
+        if len(uniq) < 2:
+            return 1
+        diffs = np.diff(uniq)
+        diffs = diffs[diffs > 0]
+        return int(diffs.min()) if len(diffs) else 1
+
+    sr = _stride(rows_raw)
+    sc = _stride(cols_raw)
+
+    rows = (rows_raw - rows_raw.min()) // sr
+    cols = (cols_raw - cols_raw.min()) // sc
+
     grid = np.full((int(rows.max()) + 1, int(cols.max()) + 1), np.nan)
     for i in range(len(weights_1d)):
         grid[rows[i], cols[i]] = float(weights_1d[i])
@@ -384,32 +407,34 @@ def plot_attention_heatmaps(
     best_multi_name: str,
     n_slides: int,
 ) -> list:
-    st_weights = singletask_inf.get("weights", {})
-    mt_weights = best_multi_inf.get("weights", {})
-    st_coords  = singletask_inf.get("coords",  {})
-    mt_coords  = best_multi_inf.get("coords",  {})
+    st_paths = singletask_inf.get("attn_paths",  {})
+    mt_paths = best_multi_inf.get("attn_paths",  {})
+    st_cpaths = singletask_inf.get("coord_paths", {})
+    mt_cpaths = best_multi_inf.get("coord_paths", {})
 
     common = [
-        sid for sid in st_weights
-        if sid in mt_weights and sid in st_coords and sid in mt_coords
+        sid for sid in st_paths
+        if sid in mt_paths and sid in st_cpaths and sid in mt_cpaths
     ]
     if not common:
         print("  [SKIP] Heatmaps: no common slides with coords.")
         return []
 
-    # Sort by single-task attention entropy (most informative first)
-    common_sorted = sorted(common,
-                           key=lambda s: compute_attn_entropy(st_weights[s]),
-                           reverse=True)[:n_slides]
+    # Sort by single-task attention entropy (most informative first, load one-by-one)
+    def _st_entropy(s):
+        w = np.load(st_paths[s])
+        return compute_attn_entropy(w)
 
-    n_mt_tasks = mt_weights[common_sorted[0]].shape[-1] if common_sorted else 3
+    common_sorted = sorted(common, key=_st_entropy, reverse=True)[:n_slides]
+
+    n_mt_tasks = np.load(mt_paths[common_sorted[0]]).shape[-1] if common_sorted else 3
     saved: list = []
 
     for slide_id in common_sorted:
-        st_w = st_weights[slide_id]
-        mt_w = mt_weights[slide_id]
-        st_c = st_coords[slide_id]
-        mt_c = mt_coords[slide_id]
+        st_w = np.load(st_paths[slide_id])
+        mt_w = np.load(mt_paths[slide_id])
+        st_c = np.load(st_cpaths[slide_id])
+        mt_c = np.load(mt_cpaths[slide_id])
 
         st_w1d = st_w[:, 0] if st_w.ndim == 2 else st_w.flatten()
         n_panels = 1 + n_mt_tasks
@@ -732,10 +757,11 @@ def section_attn_entropy(inference: dict, entropy_fig: Optional[Path]) -> tuple:
     )
     entropy_data: dict = {}
     for run_name, inf in inference.items():
-        weights = inf.get("weights", {})
-        if not weights:
+        attn_paths = inf.get("attn_paths", {})
+        if not attn_paths:
             continue
-        es = [compute_attn_entropy(w) for w in weights.values()]
+        # Load one slide at a time to avoid holding all arrays in memory
+        es = [compute_attn_entropy(np.load(p)) for p in attn_paths.values()]
         entropy_data[run_name] = es
         lines.append(
             f"| {run_name} | {fmt(np.mean(es))} | {fmt(np.std(es))} | {len(es)} |\n"
@@ -923,11 +949,11 @@ def main() -> None:
             st_inf, mt_inf, best_multi_name, args.n_slides
         )
 
-    # ── Attention entropy figure ───────────────────────────────────────────────
+    # ── Attention entropy figure (lazy-load one slide at a time) ──────────────
     entropy_data: dict = {
-        rn: [compute_attn_entropy(w) for w in inf["weights"].values()]
+        rn: [compute_attn_entropy(np.load(p)) for p in inf["attn_paths"].values()]
         for rn, inf in inference.items()
-        if inf.get("weights")
+        if inf.get("attn_paths")
     }
     entropy_fig = plot_attn_entropy(entropy_data)
     if entropy_fig:

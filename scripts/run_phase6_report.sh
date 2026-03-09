@@ -92,7 +92,6 @@ echo "════════════════════════�
 # GCP has no `python` alias — only `python3` (see docs/GCP_setup.md).
 # Activate the venv first so the correct interpreter and packages are used.
 REMOTE_CMD="cd ${GCP_PROJECT_DIR} \
-    && source surgen-env/bin/activate \
     && python3 scripts/studies/phase6_extract.py \
         --out-dir ${GCP_REMOTE_TMP} \
         ${SKIP_INFERENCE}"

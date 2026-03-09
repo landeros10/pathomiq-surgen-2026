@@ -412,7 +412,7 @@ def main() -> None:
 
         is_st     = run_name == SINGLETASK_RUN
         task_list = ["mmr"] if is_st else TASKS
-        test_csv  = data_dir / ("SurGen_test.csv" if is_st else "SurGen_multitask_test.csv")
+        test_csv  = data_dir / ("SurGen_msi_test.csv" if is_st else "SurGen_multitask_test.csv")
 
         if not test_csv.exists():
             print(f"  [WARN] Test CSV not found: {test_csv} — skipping")

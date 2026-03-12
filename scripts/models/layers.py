@@ -51,3 +51,25 @@ class SinusoidalPositionalEncoding2D(nn.Module):
         pe[..., d_half + 1::2] = torch.cos(cols.unsqueeze(-1) * div)
 
         return pe
+
+
+class MLPRelativePositionBias(nn.Module):
+    def __init__(self, num_heads: int, hidden_dim: int = 64):
+        super().__init__()
+        self.num_heads = num_heads
+        self.mlp = nn.Sequential(
+            nn.Linear(2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_heads)
+        )
+
+    def forward(self, coords: torch.Tensor) -> torch.Tensor:
+        # coords: (B, N, 2) — (row, col) pixel-space patch coords
+        # returns: (B*num_heads, N, N) additive attention bias
+        B, N, _ = coords.shape
+        rel = coords.unsqueeze(2) - coords.unsqueeze(1)   # (B, N, N, 2)
+        scale = rel.abs().amax(dim=(1,2,3), keepdim=True).clamp(min=1e-6)
+        rel = rel / scale                                  # normalize to [-1, 1] per slide
+        bias = self.mlp(rel)                               # (B, N, N, num_heads)
+        bias = bias.permute(0, 3, 1, 2).contiguous()      # (B, num_heads, N, N)
+        return bias.view(B * self.num_heads, N, N)         # (B*H, N, N)

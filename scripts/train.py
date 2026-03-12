@@ -160,7 +160,7 @@ def _compute_grad_diagnostics(model, sample_batch, task_criteria, device, tasks)
             continue
         model.zero_grad()
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
-            logits = model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)
+            logits = model(embeddings, coords=coords)
             loss   = task_criteria[i](logits[:, i], labels[:, i])
         loss.backward()
         grads = [p.grad.detach().flatten() for p in final_layer_params if p.grad is not None]
@@ -186,7 +186,7 @@ def _compute_grad_diagnostics(model, sample_batch, task_criteria, device, tasks)
 
 
 def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
-                               scaler, accum_steps, tasks):
+                               scaler, accum_steps, tasks, patch_drop_rate: float = 0.0):
     """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
                 {task: probs}, {task: labels}, mean_grad_norm)."""
     model.train()
@@ -208,8 +208,16 @@ def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
         elif coords is not None:
             coords = coords.to(device)
 
+        if patch_drop_rate > 0.0 and model.training:
+            N = embeddings.shape[1]
+            n_keep = max(1, int(N * (1 - patch_drop_rate)))
+            idx = torch.randperm(N, device=device)[:n_keep].sort().values
+            embeddings = embeddings[:, idx, :]
+            if coords is not None:
+                coords = coords[:, idx, :]
+
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
-            logits = model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)  # (1, n_tasks)
+            logits = model(embeddings, coords=coords)  # (1, n_tasks)
             step_loss = torch.tensor(0.0, device=device)
             for i, t in enumerate(tasks):
                 mask_i = valid_mask[:, i].bool()
@@ -277,7 +285,7 @@ def evaluate_multitask(model, loader, criteria, device, tasks):
             elif coords is not None:
                 coords = coords.to(device)
             with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
-                logits = model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)
+                logits = model(embeddings, coords=coords)
                 step_loss = torch.tensor(0.0, device=device)
                 for i, t in enumerate(tasks):
                     mask_i = valid_mask[:, i].bool()
@@ -314,9 +322,13 @@ def main(
     max_epochs: int = None,
     patience_override: int = None,
     max_samples: int = None,
+    seed_override: int = None,
 ) -> None:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+
+    if seed_override is not None:
+        cfg["training"]["random_seed"] = seed_override
 
     # ── Seeding ───────────────────────────────────────────────────────────────
     seed = cfg["training"]["random_seed"]
@@ -495,6 +507,7 @@ def main(
             "early_stopping_patience":   early_stopping_patience,
         }
         extra["positional_encoding"] = positional_encoding
+        extra["patch_dropout_rate"] = tc.get("patch_dropout_rate", 0.0)
         if aggregation == "attention":
             extra["attn_hidden_dim"] = attn_hidden_dim
             extra["attn_variant"]    = attn_variant
@@ -548,7 +561,8 @@ def main(
             if multitask:
                 train_loss, train_loss_d, train_auroc_d, train_probs_d, train_labels_d, grad_norm = \
                     train_one_epoch_multitask(
-                        model, train_loader, optimizer, task_criteria, device, scaler, accum_steps, tasks
+                        model, train_loader, optimizer, task_criteria, device, scaler, accum_steps, tasks,
+                        patch_drop_rate=tc.get("patch_dropout_rate", 0.0)
                     )
                 val_loss, val_loss_d, val_auroc_d, val_probs_d, val_labels_d = \
                     evaluate_multitask(model, val_loader, task_criteria, device, tasks)
@@ -747,5 +761,6 @@ if __name__ == "__main__":
     parser.add_argument("--max-epochs",       type=int, default=None, help="Cap training epochs (for preflight/debug)")
     parser.add_argument("--patience",         type=int, default=None, help="Override early_stopping_patience from config")
     parser.add_argument("--max-samples",      type=int, default=None, help="Limit each split to N samples (for preflight/debug)")
+    parser.add_argument("--seed",             type=int, default=None, help="Override training.random_seed from config")
     args = parser.parse_args()
-    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs, args.patience, args.max_samples)
+    main(args.config, args.data_dir, args.embeddings_dir, args.run_name, args.run_suffix, args.max_epochs, args.patience, args.max_samples, args.seed)

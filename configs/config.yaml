@@ -37,6 +37,7 @@ training:
   lr_scheduler: "none"       # "cosine" | "none"
   class_weighting: false     # true | false
   grad_accum_steps: 1        # 1 = no accumulation (Phase 3 behavior)
+  patch_dropout_rate: 0.0    # fraction of patches to drop during training (0 = disabled)
 
 mlflow:
   experiment_name: "mmr-prediction-baseline"

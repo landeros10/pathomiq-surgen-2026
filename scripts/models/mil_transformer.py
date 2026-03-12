@@ -78,8 +78,14 @@ class MILTransformer(nn.Module):
         if positional_encoding == "sinusoidal":
             from scripts.models.layers import SinusoidalPositionalEncoding2D
             self.pos_enc = SinusoidalPositionalEncoding2D(hidden_dim)
+            self.rpb = None
+        elif positional_encoding == "mlp_rpb":
+            from scripts.models.layers import MLPRelativePositionBias
+            self.pos_enc = None
+            self.rpb = MLPRelativePositionBias(num_heads)
         else:
             self.pos_enc = None
+            self.rpb = None
 
         if aggregation == "attention":
             self.attn_norm = nn.LayerNorm(hidden_dim)
@@ -107,7 +113,12 @@ class MILTransformer(nn.Module):
         x = self.input_proj(x)   # (B, N, hidden_dim)
         if self.pos_enc is not None and coords is not None:
             x = x + self.pos_enc(coords)
-        x = self.transformer(x)  # (B, N, hidden_dim)
+
+        rpb_mask = None
+        if self.rpb is not None and coords is not None:
+            rpb_mask = self.rpb(coords).to(x.dtype)   # cast for AMP
+
+        x = self.transformer(x, mask=rpb_mask)  # (B, N, hidden_dim)
 
         if self.aggregation == "attention":
             h       = self.attn_l1(self.attn_norm(x))  # (B, N, attn_hidden_dim)
@@ -174,8 +185,14 @@ class MultiMILTransformer(nn.Module):
         if positional_encoding == "sinusoidal":
             from scripts.models.layers import SinusoidalPositionalEncoding2D
             self.pos_enc = SinusoidalPositionalEncoding2D(hidden_dim)
+            self.rpb = None
+        elif positional_encoding == "mlp_rpb":
+            from scripts.models.layers import MLPRelativePositionBias
+            self.pos_enc = None
+            self.rpb = MLPRelativePositionBias(num_heads)
         else:
             self.pos_enc = None
+            self.rpb = None
 
         if aggregation == "attention":
             self.attn_norm = nn.LayerNorm(hidden_dim)
@@ -204,7 +221,12 @@ class MultiMILTransformer(nn.Module):
         x = self.input_proj(x)   # (B, N, hidden_dim)
         if self.pos_enc is not None and coords is not None:
             x = x + self.pos_enc(coords)
-        x = self.transformer(x)  # (B, N, hidden_dim)
+
+        rpb_mask = None
+        if self.rpb is not None and coords is not None:
+            rpb_mask = self.rpb(coords).to(x.dtype)   # cast for AMP
+
+        x = self.transformer(x, mask=rpb_mask)  # (B, N, hidden_dim)
 
         T = len(self.classifier)
 

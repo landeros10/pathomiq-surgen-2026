@@ -186,8 +186,7 @@ def _compute_grad_diagnostics(model, sample_batch, task_criteria, device, tasks)
 
 
 def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
-                               scaler, accum_steps, tasks, patch_drop_rate: float = 0.0,
-                               max_patches: int = None):
+                               scaler, accum_steps, tasks, patch_drop_rate: float = 0.0):
     """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
                 {task: probs}, {task: labels}, mean_grad_norm)."""
     model.train()
@@ -213,13 +212,6 @@ def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
             N = embeddings.shape[1]
             n_keep = max(1, int(N * (1 - patch_drop_rate)))
             idx = torch.randperm(N, device=device)[:n_keep].sort().values
-            embeddings = embeddings[:, idx, :]
-            if coords is not None:
-                coords = coords[:, idx, :]
-
-        if max_patches is not None and embeddings.shape[1] > max_patches:
-            N = embeddings.shape[1]
-            idx = torch.randperm(N, device=device)[:max_patches].sort().values
             embeddings = embeddings[:, idx, :]
             if coords is not None:
                 coords = coords[:, idx, :]
@@ -272,7 +264,7 @@ def train_one_epoch_multitask(model, loader, optimizer, criteria, device,
     return float(np.mean(total_losses)), task_mean_loss, task_auroc, task_probs, task_labels, mean_grad_norm
 
 
-def evaluate_multitask(model, loader, criteria, device, tasks, max_patches: int = None):
+def evaluate_multitask(model, loader, criteria, device, tasks):
     """Returns (mean_total_loss, {task: mean_loss}, {task: auroc},
                 {task: probs}, {task: labels})."""
     model.eval()
@@ -292,11 +284,6 @@ def evaluate_multitask(model, loader, criteria, device, tasks, max_patches: int 
                 coords = None
             elif coords is not None:
                 coords = coords.to(device)
-
-            if max_patches is not None and embeddings.shape[1] > max_patches:
-                embeddings = embeddings[:, :max_patches, :]
-                if coords is not None:
-                    coords = coords[:, :max_patches, :]
 
             with torch.autocast("cuda", dtype=torch.float16, enabled=amp_enabled):
                 logits = model(embeddings, coords=coords)
@@ -423,7 +410,6 @@ def main(
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     tc        = cfg["training"]
-    max_patches = tc.get("max_patches", None)
     n_epochs  = max_epochs if max_epochs is not None else tc["epochs"]
     lr_scheduler_type = tc.get("lr_scheduler", "none")
     class_weighting   = tc.get("class_weighting", False)
@@ -523,7 +509,6 @@ def main(
         }
         extra["positional_encoding"] = positional_encoding
         extra["patch_dropout_rate"] = tc.get("patch_dropout_rate", 0.0)
-        extra["max_patches"] = max_patches
         if aggregation == "attention":
             extra["attn_hidden_dim"] = attn_hidden_dim
             extra["attn_variant"]    = attn_variant
@@ -578,12 +563,10 @@ def main(
                 train_loss, train_loss_d, train_auroc_d, train_probs_d, train_labels_d, grad_norm = \
                     train_one_epoch_multitask(
                         model, train_loader, optimizer, task_criteria, device, scaler, accum_steps, tasks,
-                        patch_drop_rate=tc.get("patch_dropout_rate", 0.0),
-                        max_patches=max_patches,
+                        patch_drop_rate=tc.get("patch_dropout_rate", 0.0)
                     )
                 val_loss, val_loss_d, val_auroc_d, val_probs_d, val_labels_d = \
-                    evaluate_multitask(model, val_loader, task_criteria, device, tasks,
-                                       max_patches=max_patches)
+                    evaluate_multitask(model, val_loader, task_criteria, device, tasks)
 
                 val_auroc_mean = float(np.mean(list(val_auroc_d.values())))
                 val_auprc_mean = float(np.mean([
@@ -739,8 +722,7 @@ def main(
 
         if multitask:
             test_loss, test_loss_d, test_auroc_d, test_probs_d, test_labels_d = \
-                evaluate_multitask(model, test_loader, task_criteria, device, tasks,
-                                   max_patches=max_patches)
+                evaluate_multitask(model, test_loader, task_criteria, device, tasks)
             test_auprc_mean = float(np.mean([
                 compute_auprc(test_labels_d[t], test_probs_d[t]) for t in tasks
             ]))

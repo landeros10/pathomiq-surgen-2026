@@ -43,7 +43,6 @@ training:
   grad_accum_steps: 16
   early_stopping_patience: 25
   patch_dropout_rate: 0.25
-  max_patches: 8192
 
 mlflow:
   experiment_name: "multitask-surgen-phase8"

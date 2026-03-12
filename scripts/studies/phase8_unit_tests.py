@@ -3,7 +3,7 @@
 Standalone script; no embeddings needed. Run from project root:
     python scripts/studies/phase8_unit_tests.py
 
-All 8 tests must pass before running the smoke test.
+All 7 tests must pass before running the smoke test.
 """
 
 import sys
@@ -192,50 +192,6 @@ def test_patch_dropout():
 
 
 # ---------------------------------------------------------------------------
-# Test 8 — max_patches cap: train random subsample, eval deterministic, no-op when N <= cap
-# ---------------------------------------------------------------------------
-
-def test_max_patches():
-    torch.manual_seed(42)
-    cap = 8192
-
-    # --- Train: N > cap → random subsample to cap ---
-    N_large = 10000
-    emb   = _make_embeddings(1, N_large)
-    coords = _make_coords(1, N_large)
-
-    N = emb.shape[1]
-    assert N > cap
-    idx = torch.randperm(N)[:cap].sort().values
-    emb_sub   = emb[:, idx, :]
-    coord_sub = coords[:, idx, :]
-
-    assert emb_sub.shape[1] == cap,   f"Train: expected {cap}, got {emb_sub.shape[1]}"
-    assert coord_sub.shape[1] == cap, f"Train coords: expected {cap}, got {coord_sub.shape[1]}"
-    assert emb_sub.shape[2] == emb.shape[2], "Train: embedding dim changed"
-
-    # --- Eval: N > cap → deterministic first-cap patches ---
-    emb_eval   = emb[:, :cap, :]
-    coord_eval = coords[:, :cap, :]
-
-    assert emb_eval.shape[1] == cap,   f"Eval: expected {cap}, got {emb_eval.shape[1]}"
-    assert coord_eval.shape[1] == cap, f"Eval coords: expected {cap}, got {coord_eval.shape[1]}"
-    # Deterministic: first cap patches always selected
-    assert torch.equal(emb_eval, emb[:, :cap, :]), "Eval: not deterministic (first cap patches)"
-
-    # --- No-op: N <= cap ---
-    N_small = 100
-    emb_s   = _make_embeddings(1, N_small)
-    coords_s = _make_coords(1, N_small)
-
-    if cap is not None and emb_s.shape[1] > cap:
-        emb_s = emb_s[:, :cap, :]
-        coords_s = coords_s[:, :cap, :]
-
-    assert emb_s.shape[1] == N_small, f"No-op: expected {N_small}, got {emb_s.shape[1]}"
-
-
-# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -251,7 +207,6 @@ if __name__ == "__main__":
     run_test("5. MultiMILTransformer(pe=none) no-coords forward", test_multi_mil_no_pe)
     run_test("6. MultiMILTransformer(pe=mlp_rpb) with coords + grad", test_multi_mil_mlp_rpb)
     run_test("7. Patch dropout consistency", test_patch_dropout)
-    run_test("8. max_patches cap (train random, eval deterministic, no-op)", test_max_patches)
 
     print("=" * 60)
     passed = sum(1 for _, ok, _ in results if ok)

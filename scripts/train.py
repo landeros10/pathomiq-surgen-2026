@@ -725,6 +725,8 @@ def main(
             test_auprc_mean = float(np.mean([
                 compute_auprc(test_labels_d[t], test_probs_d[t]) for t in tasks
             ]))
+            test_auroc_mean = float(np.mean(list(test_auroc_d.values())))
+            mlflow.log_metric("test_auroc_mean", test_auroc_mean)
             mlflow.log_metric("test_auprc_mean", test_auprc_mean)
             for t in tasks:
                 mlflow.log_metric(f"best_val_auroc_{t}", best_val_auroc_d[t])

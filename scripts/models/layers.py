@@ -54,14 +54,14 @@ class SinusoidalPositionalEncoding2D(nn.Module):
 
 
 class MLPRelativePositionBias(nn.Module):
-    def __init__(self, num_heads: int, hidden_dim: int = 64):
+    def __init__(self, num_heads: int):
         super().__init__()
         self.num_heads = num_heads
-        self.mlp = nn.Sequential(
-            nn.Linear(2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, num_heads)
-        )
+        # Single linear projection: (B, N, N, 2) → (B, N, N, num_heads).
+        # A 2-layer MLP would expand to (B, N, N, hidden_dim), which OOMs on the
+        # T4 at ~6k patches (hidden_dim=64 → 9.5 GB intermediate). The linear
+        # projection peaks at ~600 MB for the same N and is still learnable.
+        self.mlp = nn.Linear(2, num_heads)
 
     def forward(self, coords: torch.Tensor) -> torch.Tensor:
         # coords: (B, N, 2) — (row, col) pixel-space patch coords

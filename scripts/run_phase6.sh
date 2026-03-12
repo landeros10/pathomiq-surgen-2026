@@ -84,8 +84,7 @@ for i in "${!CONFIGS[@]}"; do
     echo "  PID: ${pid}"
     echo "────────────────────────────────────────"
 
-    wait "$pid"
-    exit_code=$?
+    wait "$pid" && exit_code=0 || exit_code=$?
 
     end_ts=$(date +%s)
     elapsed=$(( end_ts - start_ts ))

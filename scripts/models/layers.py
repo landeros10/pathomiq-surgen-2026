@@ -66,6 +66,7 @@ class MLPRelativePositionBias(nn.Module):
     def forward(self, coords: torch.Tensor) -> torch.Tensor:
         # coords: (B, N, 2) — (row, col) pixel-space patch coords
         # returns: (B*num_heads, N, N) additive attention bias
+        coords = coords.float()  # int64 would cause near-zero bias via integer division
         B, N, _ = coords.shape
         rel = coords.unsqueeze(2) - coords.unsqueeze(1)   # (B, N, N, 2)
         scale = rel.abs().amax(dim=(1,2,3), keepdim=True).clamp(min=1e-6)

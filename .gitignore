@@ -6,6 +6,7 @@
 /models/
 /data/synthetic/
 /logs/
+/tmp/
 surgen-env/
 mlflow.db
 /mlruns/

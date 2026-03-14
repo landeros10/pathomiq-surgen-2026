@@ -68,6 +68,32 @@ def metrics_at_threshold(
     }
 
 
+def compute_ece(labels: List[int], probs: List[float], n_bins: int = 10) -> float:
+    """Expected Calibration Error (ECE) with equal-width probability bins.
+
+    Args:
+        labels: Ground-truth binary labels.
+        probs:  Predicted probabilities for the positive class.
+        n_bins: Number of equal-width bins in [0, 1].
+
+    Returns:
+        ECE scalar; 0.0 is perfect calibration. NaN if *labels* is empty.
+    """
+    labels_arr = np.array(labels)
+    probs_arr  = np.array(probs)
+    if len(labels_arr) == 0:
+        return float("nan")
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece  = 0.0
+    n    = len(labels_arr)
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        mask = (probs_arr >= lo) & (probs_arr < hi)
+        if mask.sum() == 0:
+            continue
+        ece += (mask.sum() / n) * abs(labels_arr[mask].mean() - probs_arr[mask].mean())
+    return float(ece)
+
+
 def full_report(
     labels: List[int],
     probs: List[float],

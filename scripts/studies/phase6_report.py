@@ -27,9 +27,17 @@ import numpy as np
 
 # ── Project path setup ────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent))   # scripts/studies/ (for stability_ablation)
+sys.path.insert(0, str(ROOT / "scripts"))         # scripts/ (for utils.*)
 
 from stability_ablation import compute_stability_metrics  # noqa: E402
+from utils.metrics import (  # noqa: E402
+    bootstrap_ci,
+    compute_auroc,
+    compute_auprc,
+    compute_ece,
+)
+from utils.eval_utils import build_attn_grid, compute_entropy  # noqa: E402
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 TASKS              = ["mmr", "ras", "braf"]
@@ -163,106 +171,13 @@ def is_singletask(run_name: str) -> bool:
     return run_name == SINGLETASK_RUN
 
 
-# ── Statistical functions ─────────────────────────────────────────────────────
+# ── Statistical functions (imported from utils) ────────────────────────────────
+# compute_auroc, compute_auprc, compute_ece, bootstrap_ci  →  utils.metrics
+# compute_entropy, build_attn_grid                         →  utils.eval_utils
 
-def _auroc(labels: np.ndarray, probs: np.ndarray) -> float:
-    from sklearn.metrics import roc_auc_score
-    if len(np.unique(labels)) < 2:
-        return float("nan")
-    return float(roc_auc_score(labels, probs))
-
-
-def _auprc(labels: np.ndarray, probs: np.ndarray) -> float:
-    from sklearn.metrics import average_precision_score
-    if len(np.unique(labels)) < 2:
-        return float("nan")
-    return float(average_precision_score(labels, probs))
-
-
-def bootstrap_ci(
-    labels: np.ndarray,
-    probs:  np.ndarray,
-    metric_fn,
-    n_bootstrap: int = 2000,
-    rng: Optional[np.random.Generator] = None,
-) -> tuple:
-    if rng is None:
-        rng = np.random.default_rng(42)
-    n      = len(labels)
-    scores = []
-    for _ in range(n_bootstrap):
-        idx = rng.integers(0, n, size=n)
-        try:
-            s = metric_fn(labels[idx], probs[idx])
-            if not math.isnan(s):
-                scores.append(s)
-        except Exception:
-            pass
-    if not scores:
-        return float("nan"), float("nan")
-    return float(np.percentile(scores, 2.5)), float(np.percentile(scores, 97.5))
-
-
-def compute_ece(labels: np.ndarray, probs: np.ndarray, n_bins: int = 10) -> float:
-    if len(labels) == 0:
-        return float("nan")
-    bins = np.linspace(0.0, 1.0, n_bins + 1)
-    ece  = 0.0
-    n    = len(labels)
-    for lo, hi in zip(bins[:-1], bins[1:]):
-        mask = (probs >= lo) & (probs < hi)
-        if mask.sum() == 0:
-            continue
-        ece += (mask.sum() / n) * abs(labels[mask].mean() - probs[mask].mean())
-    return float(ece)
-
-
-def compute_attn_entropy(weights: np.ndarray) -> float:
-    """H = −Σ wᵢ log wᵢ  averaged over tasks if weights is (N, T)."""
-    eps = 1e-12
-    if weights.ndim == 2:
-        return float(np.mean([
-            -np.sum(np.clip(weights[:, t], eps, 1.0) * np.log(np.clip(weights[:, t], eps, 1.0)))
-            for t in range(weights.shape[1])
-        ]))
-    w = np.clip(weights.flatten(), eps, 1.0)
-    return float(-np.sum(w * np.log(w)))
-
-
-def weights_to_grid(weights_1d: np.ndarray, coords: np.ndarray) -> np.ndarray:
-    """Project per-patch weights onto a 2D grid.
-
-    Coords may be raw pixel positions (large values with a fixed stride) or
-    already-normalized patch indices. Either way, we normalise by the minimum
-    non-zero inter-patch difference so the grid is always patch-sized.
-    """
-    rows_raw = coords[:, 0].astype(int)
-    cols_raw = coords[:, 1].astype(int)
-
-    # Estimate stride from modal nonzero pairwise diff.
-    # Using mode (not min) avoids spurious small gaps between patch regions
-    # that would otherwise inflate the grid and leave it mostly empty.
-    def _stride(vals):
-        uniq = np.unique(vals)
-        if len(uniq) < 2:
-            return 1
-        diffs = np.diff(uniq)
-        diffs = diffs[diffs > 0]
-        if len(diffs) == 0:
-            return 1
-        uniq_diffs, counts = np.unique(diffs, return_counts=True)
-        return int(uniq_diffs[np.argmax(counts)])
-
-    sr = _stride(rows_raw)
-    sc = _stride(cols_raw)
-
-    rows = (rows_raw - rows_raw.min()) // sr
-    cols = (cols_raw - cols_raw.min()) // sc
-
-    grid = np.full((int(rows.max()) + 1, int(cols.max()) + 1), np.nan)
-    for i in range(len(weights_1d)):
-        grid[rows[i], cols[i]] = float(weights_1d[i])
-    return grid
+# Local aliases used as metric_fn callbacks in bootstrap_ci.
+_auroc = compute_auroc
+_auprc = compute_auprc
 
 
 # ── Plot functions ─────────────────────────────────────────────────────────────
@@ -432,7 +347,7 @@ def plot_attention_heatmaps(
     # Sort by single-task attention entropy (most informative first, load one-by-one)
     def _st_entropy(s):
         w = np.load(st_paths[s])
-        return compute_attn_entropy(w)
+        return compute_entropy(w)
 
     common_sorted = sorted(common, key=_st_entropy, reverse=True)[:n_slides]
 
@@ -472,7 +387,7 @@ def plot_attention_heatmaps(
             if n_panels == 1:
                 axes = [axes]
 
-        grid_st = weights_to_grid(st_w1d, st_c)
+        grid_st = build_attn_grid(st_w1d, st_c)
         im = axes[0].imshow(grid_st, cmap="hot", aspect="equal",
                             vmin=0, vmax=np.nanmax(grid_st) or 1)
         axes[0].set_title(f"Single-task MMR\n{slide_id}", fontsize=8)
@@ -482,7 +397,7 @@ def plot_attention_heatmaps(
         is_joined = (n_mt_tasks == 1)
         for ti, task in enumerate(TASKS[:n_mt_tasks]):
             w_t  = mt_w[:, ti] if mt_w.ndim == 2 else mt_w.flatten()
-            grid = weights_to_grid(w_t, mt_c)
+            grid = build_attn_grid(w_t, mt_c)
             im   = axes[1 + ti].imshow(grid, cmap="hot", aspect="equal",
                                        vmin=0, vmax=np.nanmax(grid) or 1)
             panel_label = (
@@ -952,7 +867,7 @@ def section_attn_entropy(inference: dict, entropy_fig: Optional[Path]) -> tuple:
         if not attn_paths:
             continue
         # Load one slide at a time to avoid holding all arrays in memory
-        es = [compute_attn_entropy(np.load(p)) for p in attn_paths.values()]
+        es = [compute_entropy(np.load(p)) for p in attn_paths.values()]
         entropy_data[run_name] = es
         lines.append(
             f"| {run_name} | {fmt(np.mean(es))} | {fmt(np.std(es))} | {len(es)} |\n"
@@ -1384,7 +1299,7 @@ def main() -> None:
 
     # ── Attention entropy figure (lazy-load one slide at a time) ──────────────
     entropy_data: dict = {
-        rn: [compute_attn_entropy(np.load(p)) for p in inf["attn_paths"].values()]
+        rn: [compute_entropy(np.load(p)) for p in inf["attn_paths"].values()]
         for rn, inf in inference.items()
         if inf.get("attn_paths")
     }

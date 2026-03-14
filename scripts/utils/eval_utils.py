@@ -216,8 +216,17 @@ def build_attn_grid(
 
 # ── Entropy ────────────────────────────────────────────────────────────────────
 
-def compute_entropy(attn_1d: np.ndarray) -> float:
-    """Shannon entropy H = -Σ w·log(w+ε) for a 1-D attention distribution."""
+def compute_entropy(attn: np.ndarray) -> float:
+    """Shannon entropy H = -Σ w·log(w+ε) for an attention weight array.
+
+    For 2-D input (N, T) — e.g. multi-task ABMIL — computes per-task entropy
+    and returns the mean across tasks.  For 1-D input (N,) computes directly.
+    """
     eps = 1e-12
-    w = np.clip(attn_1d.flatten(), eps, 1.0)
+    if attn.ndim == 2:
+        return float(np.mean([
+            -np.sum(np.clip(attn[:, t], eps, 1.0) * np.log(np.clip(attn[:, t], eps, 1.0)))
+            for t in range(attn.shape[1])
+        ]))
+    w = np.clip(attn.flatten(), eps, 1.0)
     return float(-np.sum(w * np.log(w)))

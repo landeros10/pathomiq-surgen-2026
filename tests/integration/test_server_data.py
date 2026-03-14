@@ -30,7 +30,7 @@ def test_sr386_slide_loads():
         label_col="label",
         slide_id_col="case_id",
     )
-    emb, label, sid = ds[sr386_idx]
+    emb, label, sid, *_ = ds[sr386_idx]
     assert emb.ndim == 2
     assert emb.shape[1] == 1024
 
@@ -48,7 +48,7 @@ def test_sr1482_slide_loads():
         label_col="label",
         slide_id_col="case_id",
     )
-    emb, label, sid = ds[sr1482_idx]
+    emb, label, sid, *_ = ds[sr1482_idx]
     assert emb.ndim == 2
     assert emb.shape[1] == 1024
 

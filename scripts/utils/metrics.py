@@ -2,9 +2,11 @@
 
 Primary metric: AUROC (class-imbalance robust).
 Secondary: AUPRC, and per-threshold precision / recall / specificity / F1.
+Bootstrap CI helpers for test-sample uncertainty quantification.
 """
 
-from typing import Dict, List
+import math
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from sklearn.metrics import (
@@ -79,3 +81,78 @@ def full_report(
             t: metrics_at_threshold(labels, probs, t) for t in thresholds
         },
     }
+
+
+# ── Bootstrap CI helpers ───────────────────────────────────────────────────────
+
+def bootstrap_ci(
+    labels: np.ndarray,
+    probs: np.ndarray,
+    metric_fn: Callable,
+    n_bootstrap: int = 2000,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[float, float]:
+    """Test-sample bootstrap 95% CI for *metric_fn(labels, probs)*.
+
+    Args:
+        labels:      Ground-truth binary labels array.
+        probs:       Predicted probabilities array.
+        metric_fn:   Callable (labels, probs) → float.
+        n_bootstrap: Number of bootstrap resamples.
+        rng:         Optional numpy Generator; seeded at 42 if None.
+
+    Returns:
+        (lo, hi) — 2.5th and 97.5th percentile of bootstrapped scores.
+    """
+    if rng is None:
+        rng = np.random.default_rng(42)
+    n      = len(labels)
+    scores = []
+    for _ in range(n_bootstrap):
+        idx = rng.integers(0, n, size=n)
+        try:
+            s = metric_fn(labels[idx], probs[idx])
+            if not math.isnan(s):
+                scores.append(s)
+        except Exception:
+            pass
+    if not scores:
+        return float("nan"), float("nan")
+    return float(np.percentile(scores, 2.5)), float(np.percentile(scores, 97.5))
+
+
+def pooled_bootstrap_ci(
+    inference: dict,
+    run_names: List[str],
+    task: str,
+    metric_fn: Callable,
+    n: int = 2000,
+) -> Tuple[float, float]:
+    """Bootstrap CI on probs/labels concatenated across seed runs for one task.
+
+    Args:
+        inference:  {run_name: {"labels": {task: arr}, "probs": {task: arr}}}
+        run_names:  Which runs to pool.
+        task:       Task key (e.g. "mmr").
+        metric_fn:  Callable (labels, probs) → float.
+        n:          Bootstrap resamples.
+
+    Returns:
+        (lo, hi) — pooled 95% CI.
+    """
+    all_labels: List[np.ndarray] = []
+    all_probs:  List[np.ndarray] = []
+    for rn in run_names:
+        if rn not in inference:
+            continue
+        lbl  = inference[rn]["labels"].get(task, np.array([]))
+        prob = inference[rn]["probs"].get(task, np.array([]))
+        if len(lbl) > 0:
+            all_labels.append(lbl)
+            all_probs.append(prob)
+    if not all_labels:
+        return float("nan"), float("nan")
+    labels_pool = np.concatenate(all_labels)
+    probs_pool  = np.concatenate(all_probs)
+    rng = np.random.default_rng(42)
+    return bootstrap_ci(labels_pool, probs_pool, metric_fn, n_bootstrap=n, rng=rng)

@@ -43,11 +43,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).parent))
 
-from phase7_utils import (          # noqa: E402
+from utils.eval_utils import (      # noqa: E402
     SINGLETASK_RUN,
     MULTITASK_RUN,
-    INFERENCE_DIR,
-    FIGURES_DIR,
+    DEFAULT_INFERENCE_DIR as INFERENCE_DIR,
+    DEFAULT_FIGURES_DIR as FIGURES_DIR,
     load_study_set,
     load_run_inference,
     load_slide_attn,
@@ -61,8 +61,8 @@ GCP_CZI_DIR     = "/mnt/data-surgen"
 GCP_SCRIPTS_DIR = "/home/chris/surgen/scripts"
 GCP_INFERENCE   = "/home/chris/surgen/tmp/phase6-report-data/inference"
 
-LOCAL_DATA_DIR  = ROOT / "tmp" / "phase7-top-data"
-LOCAL_ATTR_DIR  = ROOT / "tmp" / "phase7-attr-data"
+LOCAL_DATA_DIR  = ROOT / "results" / "phase7" / "top"
+LOCAL_ATTR_DIR  = ROOT / "results" / "phase7" / "attr"
 TOP_OUT_DIR     = FIGURES_DIR / "top_patches"
 
 TARGET_MPP = 1.0

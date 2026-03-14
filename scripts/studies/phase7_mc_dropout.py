@@ -40,10 +40,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).parent))
 
-from phase7_utils import (          # noqa: E402
+from utils.eval_utils import (      # noqa: E402
     SINGLETASK_RUN,
     MULTITASK_RUN,
-    FIGURES_DIR,
+    DEFAULT_FIGURES_DIR as FIGURES_DIR,
     build_attn_grid,
     load_slide_coords,
     load_study_set,
@@ -58,7 +58,7 @@ GCP_SCRIPTS_DIR  = "/home/chris/surgen/scripts"
 GCP_ROOT_DIR     = "/home/chris/surgen"
 GCP_DATA_DIR     = "/home/chris/surgen/data/splits"
 
-LOCAL_DATA_DIR   = ROOT / "tmp" / "phase7-mc-data"
+LOCAL_DATA_DIR   = ROOT / "results" / "phase7" / "mc"
 UNC_OUT_DIR      = FIGURES_DIR / "uncertainty"
 
 MC_PASSES        = 50

@@ -15,7 +15,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_INFERENCE_DIR = ROOT / "tmp" / "phase6-report-data" / "inference"
+DEFAULT_INFERENCE_DIR = ROOT / "results" / "phase6" / "inference"
 DEFAULT_FIGURES_DIR   = ROOT / "reports" / "figures" / "phase7"
 DEFAULT_MLFLOW_DB     = ROOT / "mlflow.db"
 

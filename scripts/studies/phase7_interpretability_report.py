@@ -19,7 +19,7 @@ from utils.eval_utils import DEFAULT_FIGURES_DIR as FIGURES_DIR  # noqa: E402
 
 REPORTS_DIR = ROOT / "reports"
 # Step 5 Part B meta files land in tmp/ after GCP download
-TOP_DATA_DIR = ROOT / "tmp" / "phase7-top-data"
+TOP_DATA_DIR = ROOT / "results" / "phase7" / "top"
 
 
 def _rel(path: Path) -> str:

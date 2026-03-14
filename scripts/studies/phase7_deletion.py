@@ -43,11 +43,11 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).parent))
 
-from phase7_utils import (          # noqa: E402
+from utils.eval_utils import (      # noqa: E402
     SINGLETASK_RUN,
     MULTITASK_RUN,
-    INFERENCE_DIR,
-    FIGURES_DIR,
+    DEFAULT_INFERENCE_DIR as INFERENCE_DIR,
+    DEFAULT_FIGURES_DIR as FIGURES_DIR,
     load_study_set,
     mlflow_run_id,
 )
@@ -61,8 +61,8 @@ GCP_ROOT_DIR    = "/home/chris/surgen"
 GCP_INFERENCE   = "/home/chris/surgen/tmp/phase6-report-data/inference"
 GCP_ATTR_DIR    = "/home/chris/surgen/tmp/phase7-attr-data"
 
-LOCAL_DATA_DIR  = ROOT / "tmp" / "phase7-del-data"
-LOCAL_ATTR_DIR  = ROOT / "tmp" / "phase7-attr-data"
+LOCAL_DATA_DIR  = ROOT / "results" / "phase7" / "deletion"
+LOCAL_ATTR_DIR  = ROOT / "results" / "phase7" / "attr"
 DEL_OUT_DIR     = FIGURES_DIR / "deletion"
 
 K_LEVELS        = [0.00, 0.05, 0.10, 0.20, 0.30, 0.50]

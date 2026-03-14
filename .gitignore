@@ -1,7 +1,5 @@
 # ── Project-specific ──────────────────────────────────────────────────────────
-/scripts/gcp_workspace.sh
-/scripts/mlflow_local.sh
-/scripts/mlflow_tunnel.sh
+/scripts/dev/
 /embeddings/
 /models/
 /data/synthetic/

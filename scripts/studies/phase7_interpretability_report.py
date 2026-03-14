@@ -13,8 +13,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from phase7_utils import FIGURES_DIR, ROOT  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from utils.eval_utils import DEFAULT_FIGURES_DIR as FIGURES_DIR  # noqa: E402
 
 REPORTS_DIR = ROOT / "reports"
 # Step 5 Part B meta files land in tmp/ after GCP download

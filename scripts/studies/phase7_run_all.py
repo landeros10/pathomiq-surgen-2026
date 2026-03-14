@@ -31,8 +31,9 @@ from pathlib import Path
 
 # ── Import shared constants ────────────────────────────────────────────────────
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-from phase7_utils import FIGURES_DIR, ROOT  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from utils.eval_utils import DEFAULT_FIGURES_DIR as FIGURES_DIR  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 STATUS_JSON = FIGURES_DIR / "phase7_status.json"

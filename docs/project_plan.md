@@ -53,113 +53,108 @@ Tested 8 intervention combinations (cosine LR × class weighting × grad accum) 
 
 ---
 
-## Phase 6 — ABMIL + Multitask Fixes + Attention Analysis
+## Phase 6 — ABMIL + Multitask Fixes + Attention Analysis ✓ COMPLETED
 
-**Goal:** Two parallel objectives drive this phase: (1) determine whether multitask joint training regularizes the single-task overfitting observed in Phase 4 (the hypothesis being that predicting harder co-labels forces the backbone toward a richer, less shortcut-prone representation); and (2) determine whether multitask objectives shift the model's regions of attention toward more biologically meaningful tissue structures relative to single-task MMR training.
+7-run experiment (`multitask-surgen-phase6`): ABMIL aggregation + per-head class weighting + cosine LR, accum=16, 150 epochs, patience=25. Architecture prep: `aggregation: "attention"` in both model classes, `attn_variant: split|joined`, `(row,col)` coords emitted by datasets, `SinusoidalPositionalEncoding2D` in `layers.py`. Report: `reports/2026-03-09-phase6-results.md`.
 
-**Why ABMIL is the prerequisite for both:** Mean pooling produces no interpretable attention map — the attention analysis goal cannot be answered with the current architecture. ABMIL (Ilse et al. 2018) is also a higher-leverage performance change than any scheduler or loss tweak for rare-label tasks (MMR 10%, BRAF 14%), where the positive signal is likely concentrated in a small fraction of patches. Switching to ABMIL enables both the interpretability study and potential AUROC gains simultaneously.
+**Key results:**
 
-**Multitask fixes bundled in this phase:** Three known failure modes from Phase 5 must be corrected before the attention analysis is meaningful: (a) no per-head class weighting despite large prevalence differences (10%/44%/14%), (b) equal-weight summing of task losses despite RAS dominating the gradient at 44% prevalence, and (c) BRAF sensitivity collapse (0.30–0.35) caused by (a). These are wired together as a single config change rather than separate ablation rounds.
+| Config | MMR test | RAS test | BRAF test | Mean test |
+|--------|----------|----------|-----------|-----------|
+| abmil-nope | 0.8633 | 0.6326 | 0.8292 | 0.7750 |
+| **abmil-joined** ← best | **0.8351** | **0.6543** | **0.8394** | **0.7763** |
+| singletask-mmr-abmil | 0.8222 | — | — | — |
 
-### Steps
-
-- [x] **Step 1 — Verify RAS val/test stratification**: train 44.2%, val 41.8%, test 40.9% — all gaps ≤ 3.3 pp, splits are adequately stratified. No rebuild needed.
-
-- [~] **Step 2 — Per-head class weighting**: Folded into all Step 6 configs (`class_weighting: true`). No separate step needed.
-
-- [x] **Step 3 — ABMIL aggregation**: `aggregation: "attention"` gated in both `MILTransformer` and `MultiMILTransformer`. Added `attn_variant: "split"` (task-specific `attn_l2: Linear(128, T)` → T independent distributions) and `"joined"` (shared `attn_l2: Linear(128, 1)` → single distribution broadcast to all tasks). `forward(return_weights=True)` returns `(logits, weights)` shape `(B, N, T)` or `(B, N, 1)`.
-
-- [x] **Step 4 — Patch coordinate extraction**: `get_grid_shape(zarr_path)` added to `dataset.py`. Both `MILDataset` and `MultitaskMILDataset` emit `(row, col)` coords as a `(N, 2)` long tensor (or `None` for `.pt` files). `mil_collate_fn` handles `None` coords without collate errors.
-
-- [x] **Step 5 — 2D Sinusoidal Positional Encoding**: `SinusoidalPositionalEncoding2D` in `scripts/models/layers.py`. Gated via `positional_encoding: "sinusoidal"|"none"` in both model classes.
-
-- [ ] **Step 6 — GCP training run**: 7-run experiment (`multitask-surgen-phase6`, `scripts/run_phase6.sh`), all with cosine LR, accum=16, 150 epochs, patience=25, `class_weighting=true`:
-
-  | Run name | Model | aggregation | attn_variant | PE |
-  |---|---|---|---|---|
-  | `multitask-mean-cosine-accum16` | Multi | mean | — | none |
-  | `multitask-mean-pe-cosine-accum16` | Multi | mean | — | sinusoidal |
-  | `multitask-abmil-nope-cosine-accum16` | Multi | attention | split | none |
-  | `multitask-abmil-cosine-accum16` | Multi | attention | split | sinusoidal |
-  | `multitask-abmil-joined-cosine-accum16` | Multi | attention | joined | none |
-  | `multitask-abmil-joined-pe-cosine-accum16` | Multi | attention | joined | sinusoidal |
-  | `singletask-mmr-abmil-cosine-accum16` | Single | attention | — | none |
-
-  Compare per-task val/test AUROC, BRAF sensitivity, and MMR vl_rise vs Phase 5 `multitask-cosine-accum16` and Phase 4 single-task (0.021).
-
-- [ ] **Step 7 — Phase 6 Results Report**: Generate a Phase 6 summary report at `reports/YYYY-MM-DD-phase6-results.md` that consolidates all experimental outcomes into a single reference document before Phase 7 begins. The report must cover:
-
-  1. **7-run performance table** — val and test AUROC for each run across all three tasks (MMR, RAS, BRAF), plus BRAF sensitivity. Annotated against Phase 5 `multitask-cosine-accum16` baseline (mean val AUROC 0.821).
-
-  2. **AUPRC per task per run** — for imbalanced tasks (MMR 10%, BRAF 14%), AUROC is an insufficient ranking metric; AUPRC directly measures precision-recall tradeoff on the rare positive class and is the standard in clinical ML literature (MICCAI, Nature Medicine). Include alongside AUROC in the performance table.
-
-  3. **Bootstrap 95% confidence intervals on AUROC and AUPRC** — test set n=165 makes point estimates statistically ambiguous; 2–3 pp differences are uninterpretable without CIs. CIs are computed by resampling the 165 test examples with replacement ~1000 times using the fixed model's saved predictions (no re-training required), estimating uncertainty from finite test set size. Report CIs for the best run and the Phase 5 baseline to assess whether gains are reliable.
-
-  4. **BRAF sensitivity recovery verdict** — explicit pass/fail against the >0.50 gate, with the actual recovered value.
-
-  5. **MMR regularization hypothesis verdict** — MMR vl_rise for the best ABMIL run vs Phase 4 single-task (0.021). Explicit conclusion: does multitask training reduce overfitting on MMR?
-
-  6. **Best config identification + ablation delta table** — which aggregation / attn_variant / PE combination wins on mean val AUROC. Include a compact ablation table showing the marginal AUROC contribution of each design axis (ABMIL vs mean, PE vs none, split vs joined), isolating each variable against an otherwise identical config.
-
-  7. **Calibration (ECE)** — Expected Calibration Error for the best run per task. Uncalibrated outputs cannot support clinical decision thresholds; ECE demonstrates awareness of deployment requirements beyond ranking metrics.
-
-  8. **Attention analysis** — using checkpoints from Step 6 (`singletask-mmr-abmil` vs best multitask ABMIL run), extract per-patch attention weights, project onto the slide patch grid, and generate heatmap overlays for a matched set of slides via `scripts/studies/attention_comparison.py`. Include figures inline and state whether multitask training shifts attention toward different tissue regions vs single-task MMR.
-
-  9. **Attention weight entropy** — for all ABMIL runs, report mean per-slide attention entropy (H = −Σ wᵢ log wᵢ over patches). Low entropy indicates sparse, focal attention (pathologically interpretable); high entropy indicates diffuse weighting. Compare entropy distributions between single-task and best multitask ABMIL run to quantify whether the attention shift hypothesis holds beyond qualitative heatmaps.
-
-  10. **Task gradient conflict diagnostic** — report epoch-level cosine similarity between task gradient vectors at the final shared transformer layer. Conclude whether MMR–RAS gradients are conflicting (near −1) or orthogonal (near 0), and whether GradNorm is warranted in Phase 7.
-
-  11. **Phase 6 gate checklist** — explicitly evaluate all gates defined in the plan (mean val AUROC ≥ 0.821, BRAF sensitivity > 0.50, MMR vl_rise documented, attention figure generated). State pass/fail for each.
-
-### Gate: before moving to Phase 7
-
-- ABMIL multitask must match or exceed Phase 5 `multitask-cosine-accum16` mean val AUROC (0.821).
-- BRAF sensitivity must recover above 0.50 (from 0.30–0.35 in Phase 5) with per-head class weighting.
-- MMR vl_rise should be compared against Phase 4 single-task (0.021) to assess the regularization hypothesis. Document the result explicitly — do not defer.
-- At least one matched-slide attention comparison figure must be generated before proceeding to Phase 7.
+- **BRAF sensitivity: PASS** — all 6/6 runs 0.70–0.80 (vs 0.30–0.35 Phase 5).
+- **MMR regularization hypothesis: NOT supported** — all runs show higher vl_rise than Phase 4 (0.021); best run 0.597.
+- **PE consistently hurts** (−0.008 to −0.017 mean val AUROC) — excluded from Phase 7.
+- **Gradient conflict: mild** — min cosine similarity −0.494 (MMR-BRAF); GradNorm not urgently needed.
+- **Attention entropy:** joined-attn most focused (H=7.60 vs 8.08 split); ST H=7.89.
+- **ECE:** best MMR calibration at joined-pe (0.069); BRAF poorly calibrated across all runs (0.14–0.16).
+- **All gates passed.** Phase 7 backbone: `multitask-abmil-joined-cosine-accum16`.
 
 ---
 
-## Phase 7 — Relative Positional Embeddings
+## Phase 7 — Interpretability Studies ✓ COMPLETED
 
-**Goal:** Add distance-aware attention bias so the model can learn that nearby patches should attend to each other more strongly than distant ones. This is the WSI analog of Swin Transformer's relative position bias.
+**Goal:** Validate what the Phase 6 ABMIL model learned: (1) do attention weights localize biologically meaningful regions? (2) does multitask training shift attention vs. single-task? (3) are attention-identified regions causally important?
 
-**Prerequisite:** Phase 6 must show that sinusoidal PE contributes positively. Relative PE is an incremental upgrade — if absolute PE provides no benefit, relative PE is unlikely to either.
+**Six analyses** on a 19-slide study set (5 correct_msi, 5 correct_mss, 4 wrong_msi, 5 wrong_mss): (1) attention heatmaps, (2) gradient attribution comparison (GradNorm + IxG vs. raw ABMIL; Spearman ρ), (3) MC Dropout uncertainty + ECE on full test split, (4) rank-ordered patch deletion/insertion curves, (5) top-k contact sheets + UMAP+HDBSCAN morphologic clustering, (6) attention entropy with singletask vs. multitask Mann-Whitney test. `phase7_run_all.py` orchestrates all steps with sentinel-based re-entrancy.
 
-### Steps
+**Results:** Attribution faithfulness mean ρ = 0.850 — ABMIL weights are reliable proxies for gradient importance; canonical method: `grad`. Deletion gate PASS (3/5 correct-MSI slides ≥5 pp drop at k=20%); MT model more concentrated (grad del-AUC 0.209 vs ST 0.373). MC Dropout σ ~7× higher on misclassified vs. correct slides. Multitask focus hypothesis SUPPORTED: MT-joined H = 7.60 vs ST H = 7.89, p = 2.13e-06, r = −0.302 — effect specific to joined-ABMIL variant. ST = 5 morphologic clusters, MT = 4, consistent with concentrated attribution. **All 7 gates passed.**
 
-- [ ] **Step 1 — Port `MultiScaleAttention` RPE**: The relative positional embedding logic in `brca_riskformer/riskformer/training/layers.py` (`calc_rel_pos_spatial`, `rel_pos_h`, `rel_pos_w`) can be added to `MILTransformer` as a lightweight modification of `TransformerEncoderLayer`. The simplest approach: replace `nn.TransformerEncoderLayer` with a custom `RPETransformerLayer` that adds the bias directly to the attention logits before softmax.
-
-- [ ] **Step 2 — Config flag**: Add `relative_pos_embedding: true/false` to config. Default `false` to keep backward compatibility.
-
-- [ ] **Step 3 — Unit test**: Confirm that with a known `(H, W)` grid, `rel_pos_h` and `rel_pos_w` are initialized and updated by backprop.
-
-- [ ] **Step 4 — GCP training run + ablation**: Train with sinusoidal PE only vs. sinusoidal PE + RPE. Write `scripts/studies/ablation_rpe.py` to compare checkpoints and write a delta AUROC table to `reports/`.
-
-### Gate: before moving to Phase 8
-
-RPE must show measurable improvement (>0.005 val AUROC) over Phase 6. If not, document and skip — do not carry forward complexity that does not contribute.
+**Report:** `reports/2026-03-10-phase7-interpretability.md` | **Figures:** `reports/figures/phase7/`
 
 ---
 
-## Phase 8 — Interpretability Studies *(Placeholder)*
+## Phase 8 — MLP-RPB + Patch Dropout Ablation
 
-**Goal:** Use the attention weights and global attention pooling weights from the Phase 7 flat model to generate spatially meaningful visualizations. Doing this before the hierarchical refactor validates that attention has learned biologically meaningful structure — and provides a baseline for comparing against the region-level predictions in Phase 9.
+**Goal:** Determine whether learned relative position bias (MLP-RPB) and patch dropout improve over the Phase 6 ABMIL baseline. Phase 6 showed sinusoidal absolute PE consistently hurts (−0.008 to −0.017 mean val AUROC). ALiBi was ruled out because it imposes a hard distance penalty that suppresses long-range attention — wrong prior for MSI where signal is globally distributed. PEG was ruled out due to scatter/gather complexity on sparse coords. **MLP-RPB** (small MLP on continuous `(Δrow, Δcol)` coords → additive attention bias) is fully learnable, handles arbitrary sparse grids natively, and can learn near-zero effect if spatial context is uninformative — bounded downside.
 
-**Scripts** (all in `scripts/studies/`, output to `reports/`):
-- `attention_heatmap.py` — project final-layer attention weights back onto slide patch grid, render as heatmap overlay
-- `attn_pool_weights.py` — rank patches by attention weight, visualize top-k vs. bottom-k patches
-- Correlation of high-attention regions with known dMMR tissue patterns (if annotations available)
+**2×3 ablation** — MLflow experiment `multitask-surgen-phase8`. All runs are full copies of `configs/phase6/config_multitask_abmil_joined.yaml` (multitask ABMIL joined, cosine LR, accum=16, 150 epochs, patience=25, class_weighting=true). `positional_encoding` ∈ {none, mlp_rpb} × `patch_dropout_rate` ∈ {0.0, 0.1, 0.25} = **6 configs × 3 seeds = 18 runs total.**
 
-*Detailed steps TBD. Requires raw WSI thumbnails or patch coordinate metadata for visualization.*
+| Config | `positional_encoding` | `patch_dropout_rate` | Run names |
+|---|---|---|---|
+| `config_phase8_baseline` | `"none"` | 0.0 | `phase8-baseline-s{0,1,2}` |
+| `config_phase8_mlp_rpb` | `"mlp_rpb"` | 0.0 | `phase8-mlp-rpb-s{0,1,2}` |
+| `config_phase8_dropout10` | `"none"` | 0.1 | `phase8-dropout10-s{0,1,2}` |
+| `config_phase8_dropout25` | `"none"` | 0.25 | `phase8-dropout25-s{0,1,2}` |
+| `config_phase8_mlp_rpb_dropout10` | `"mlp_rpb"` | 0.1 | `phase8-mlp-rpb-dropout10-s{0,1,2}` |
+| `config_phase8_mlp_rpb_dropout25` | `"mlp_rpb"` | 0.25 | `phase8-mlp-rpb-dropout25-s{0,1,2}` |
+
+**Gate:** `phase8-baseline` mean test AUROC ≥ 0.7763 (Phase 7 reference). Winner: Δ_mean > +0.005 over baseline **and** CIs non-overlapping. If no winner: carry `"none"` / 0.0 forward to Phase 9.
 
 ---
 
+### Architecture Facts (read source before implementing)
+
+- **`scripts/models/layers.py`** — only `SinusoidalPositionalEncoding2D` exists. `MLPRelativePositionBias` needs to be added.
+- **`scripts/models/mil_transformer.py`** — both `MILTransformer` and `MultiMILTransformer` have a `positional_encoding` param. PE dispatch is a 2-way if/else at init: only `"sinusoidal"` is handled, else `self.pos_enc = None`. Needs a 3-way dispatch adding `"mlp_rpb"` → `self.rpb`. `self.transformer` is `nn.TransformerEncoder(batch_first=True)` — the `(B*H, N, N)` mask shape is valid for `batch_first=True` per PyTorch docs.
+- **`scripts/train.py`** — three multitask call sites use a ternary guard `model(embeddings) if (model.pos_enc is None or coords is None) else model(embeddings, coords=coords)` (lines 163, 212, 280) — all three must become `model(embeddings, coords=coords)`. No `hasattr` guard needed for `model.transformer.layers[-1]` since MLP-RPB does not wrap the transformer. The call site at ~line 549–552 passes `train_one_epoch_multitask(..., tasks)` — add `patch_drop_rate=tc.get("patch_dropout_rate", 0.0)` kwarg.
+- **MLflow metric keys**: `test_auroc_{t}`, `best_val_auroc_{t}`, `best_val_auroc_mean`, `best_epoch` — use these exact keys in the report script.
+
+---
+
+### Steps 1–5 ✓ DONE
+
+- **`layers.py`:** Added `MLPRelativePositionBias(num_heads, hidden_dim=64)` — 2-layer MLP on per-slide normalized `(Δrow, Δcol)` → `(B*H, N, N)` additive attention bias.
+- **`mil_transformer.py`:** Both `MILTransformer` and `MultiMILTransformer` updated with 3-way PE dispatch (`sinusoidal` / `mlp_rpb` / `none`) and `self.transformer(x, mask=rpb_mask)` in forward.
+- **`train.py`:** Three ternary model-call guards simplified to `model(embeddings, coords=coords)`; `patch_drop_rate` param + random patch subsampling added to `train_one_epoch_multitask`; MLflow logs `patch_dropout_rate`; `--seed` CLI arg overrides `training.random_seed`.
+- **`configs/config.yaml`:** Added `patch_dropout_rate: 0.0` under `training:`.
+- **`configs/phase8/`:** 6 YAML files created (`config_phase8_baseline.yaml`, `config_phase8_mlp_rpb.yaml`, `config_phase8_dropout10.yaml`, `config_phase8_dropout25.yaml`, `config_phase8_mlp_rpb_dropout10.yaml`, `config_phase8_mlp_rpb_dropout25.yaml`).
+- **`scripts/studies/phase8_unit_tests.py`:** 7/7 tests pass locally (shape, grad, normalization, variable-N, no-PE forward, mlp_rpb + grad, patch dropout consistency).
+- **`scripts/run_phase8.sh`:** Orchestrator with `--preflight`, `--patience N`, `--seeds "0 1 2"` flags; loops 6 configs × seeds sequentially; logs to `logs/phase8/<run_name>[_preflight].log`.
+
+**Next:** Smoke test on GCP — `./scripts/run_phase8.sh --preflight --seeds "0"` (6 runs × 1 epoch), then full 18-run launch.
+
+---
+
+### Step 6 — Report Script (`scripts/studies/phase8_ablation.py`)
+
+Fetch all 18 runs from `multitask-surgen-phase8`. Group by config (6 groups × 3 seeds). For each config compute mean ± std across seeds for MMR, RAS, BRAF, and mean test AUROC. Output markdown table:
+
+| Config | PE | Dropout | MMR mean±std | RAS mean±std | BRAF mean±std | Mean±std | Δ vs baseline |
+|---|---|---|---|---|---|---|---|
+
+Also fetch Phase 6 reference run for context. Write to `reports/YYYY-MM-DD-phase8-results.md`.
+
+---
+
+### Gate: before moving to Phase 9
+
+- `phase8-baseline` mean test AUROC ≥ 0.7763 (Phase 7 reference).
+- Winner: Δ_mean > +0.005 over baseline **and** CIs non-overlapping; carry `positional_encoding` and `patch_dropout_rate` forward to Phase 9.
+- If no winner: document null result, carry `"none"` / 0.0 forward, proceed to Phase 9.
+- Report committed to `reports/`.
+
+---
+
+## PHASE 9 DISCONTINUED FOR NOW
 ## Phase 9 — Tissue-Adversarial Conditioning (DANN)
 
 **Goal:** Supplement the MIL classifier with a frozen tissue-type prior derived from an external CRC patch dataset, injected via cross-attention gating. A patch-level Domain-Adversarial Neural Network (DANN) penalty then forces the transformer's learned representation to be uninformative about tissue type — compelling the encoder to focus on patterns beyond tissue composition when predicting MSI status.
 
-**Motivation:** ABMIL attention maps from Phase 8 may reveal that the model attends to tissue type as a proxy signal for MSI (e.g., high lymphocyte density). Making tissue identity an explicit input removes any incentive for the encoder to re-derive it, while the adversarial penalty removes any incentive to retain it in the learned representation.
+**Motivation:** ABMIL attention maps from Phase 7 may reveal that the model attends to tissue type as a proxy signal for MSI (e.g., high lymphocyte density). Making tissue identity an explicit input removes any incentive for the encoder to re-derive it, while the adversarial penalty removes any incentive to retain it in the learned representation.
 
 **Two offline prerequisites must be completed and outputs committed to the repo before any GCP training run.**
 
@@ -196,10 +191,10 @@ Three components, all gated by config:
 ### Steps
 
 - [ ] **Step 1** — Implement `CrossAttentionTissueGate`, `GradientReversalLayer`, and adversarial head in `scripts/models/tissue_gate.py`. Unit test each component.
-- [ ] **Step 2** — Wire into `MILTransformer` / `MultiMILTransformer` behind config flags. Confirm numerical identity with Phase 8 when all new components are disabled.
+- [ ] **Step 2** — Wire into `MILTransformer` / `MultiMILTransformer` behind config flags. Confirm numerical identity with Phase 7 when all new components are disabled.
 - [ ] **Step 3** — Add config keys: `use_tissue_prior`, `tissue_probe_path`, `tissue_gate`, `tissue_gate_heads`, `tissue_gate_dim`, `dann_coeff`, `dann_lambda_max`, `dann_gamma`.
 - [ ] **Step 4** — Synthetic gate test on CPU before any GCP run.
-- [ ] **Step 5** — GCP ablation (5 runs, all using best Phase 8 config):
+- [ ] **Step 5** — GCP ablation (5 runs, all using best Phase 7 config):
 
   | Run | tissue_gate | dann_coeff | purpose |
   |---|---|---|---|
@@ -210,11 +205,11 @@ Three components, all gated by config:
   | `phase9-full-dann05` | cross_attention | 0.5 | stronger adversarial pressure |
 
 - [ ] **Step 6** — Tissue discriminability diagnostic: train a fresh linear probe on held-out patch-level transformer outputs and report `tissue_leakage_acc` per run. This is the primary evidence that DANN is functioning.
-- [ ] **Step 7** — Cross-attention attribution analysis: extract `[N, 9]` gate weights, project onto patch grid, compare spatial attention distribution against Phase 8 ABMIL maps. Write `scripts/studies/phase9_tissue_analysis.py`.
+- [ ] **Step 7** — Cross-attention attribution analysis: extract `[N, 9]` gate weights, project onto patch grid, compare spatial attention distribution against Phase 7 ABMIL maps. Write `scripts/studies/phase9_tissue_analysis.py`.
 - [ ] **Step 8** — Results report: `reports/YYYY-MM-DD-phase9-results.md`.
 
 ### Gate
 
-- `phase9-full` must match or exceed Phase 8 MMR AUROC.
+- `phase9-full` must match or exceed Phase 7 MMR AUROC.
 - `tissue_leakage_acc` must be measurably lower in `phase9-full` vs `phase9-baseline`. If not, increase `dann_coeff` before concluding the approach failed.
 - If `phase9-gate-only` matches `phase9-full`, DANN contributes nothing beyond cross-attention alone — carry only the gate forward.

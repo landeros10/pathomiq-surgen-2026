@@ -7,6 +7,8 @@ runs inference on the test set, and serializes per-slide predictions to disk.
 Run this on GCP. scp the output dir locally, then run:
     python scripts/studies/phase8_ablation.py --data-dir <out-dir>
 
+Output defaults to reports/data/ locally.
+
 Output layout:
   <out-dir>/
     runs.json                     # {run_name: {run_id, params, scalars}}

@@ -104,10 +104,8 @@ def build_command(
 
     # GCP step
     if visualise_only:
-        # Steps 4 & 5 support --visualise-only; Steps 2 & 3 run as dry-runs (no --gcp-host)
-        if n in (4, 5):
-            cmd.append("--visualise-only")
-        # Steps 2 & 3: no GCP args → dry-run behaviour from their own argparse defaults
+        # All GCP steps support --visualise-only; pass the flag directly
+        cmd.append("--visualise-only")
         return cmd
 
     # Normal GCP run
@@ -239,7 +237,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--visualise-only",
         action="store_true",
-        help="Skip GCP; pass --visualise-only to Steps 4 & 5; dry-run Steps 2 & 3.",
+        help="Skip GCP; pass --visualise-only to all GCP steps (2–5), regenerating plots from saved data.",
     )
     p.add_argument(
         "--force",
@@ -295,7 +293,7 @@ def main() -> None:
     # ── Run ────────────────────────────────────────────────────────────────────
     print(f"\nPhase 7 — running steps {run_order}")
     if args.visualise_only:
-        print("  mode: visualise-only (no GCP)\n")
+        print("  mode: visualise-only (no GCP; regenerates plots from saved data)\n")
     elif not args.gcp_host:
         print("  mode: dry-run (no --gcp-host; GCP steps will run without remote args)\n")
     else:

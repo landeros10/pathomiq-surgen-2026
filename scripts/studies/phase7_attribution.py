@@ -422,6 +422,8 @@ def parse_args():
                    help="GCP server IP (omit for dry-run)")
     p.add_argument("--gcp-user", default="chris")
     p.add_argument("--gcp-pass", default=None)
+    p.add_argument("--visualise-only", action="store_true",
+                   help="Skip GCP compute; regenerate visualisations from existing local data.")
     return p.parse_args()
 
 
@@ -433,6 +435,17 @@ def main():
     study_set = load_study_set()
     print(f"  {len(study_set)} slides: "
           + ", ".join(s["slide_id"] for s in study_set))
+
+    # ── Visualise-only: skip GCP, regenerate plots from saved data ────────────
+    if args.visualise_only:
+        print("--visualise-only: skipping remote compute")
+        print("\nPhase 3 — local visualisation")
+        visualise(study_set)
+        print(f"\nDone.")
+        print(f"  Attribution panels : {ATTR_OUT_DIR}/")
+        print(f"  Gallery            : {ATTR_OUT_DIR}/gallery.png")
+        print(f"  Spearman summary   : {ATTR_OUT_DIR}/spearman.json")
+        return
 
     print("\nPhase 1b — resolving MLflow run IDs")
     try:

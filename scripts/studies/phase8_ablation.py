@@ -6,7 +6,6 @@ All analysis logic lives in scripts/eval/performance/ablation.py.
 Usage (run from project root after scp of mlflow.db):
     python scripts/studies/phase8_ablation.py
     python scripts/studies/phase8_ablation.py --mlflow-db /path/to/mlflow.db
-    python scripts/studies/phase8_ablation.py --data-dir phase8-data/ --n-bootstrap 2000
 """
 
 import sys

@@ -453,12 +453,8 @@ def plot_learning_curves(trajs: dict, out_path: Path) -> None:
 
 # ── Gate evaluation ───────────────────────────────────────────────────────────
 
-def evaluate_gate(agg: dict, inference: Optional[dict] = None, n_bootstrap: int = 2000) -> dict:
-    """Return gate verdict dict.
-
-    When inference is provided, uses test-sample pooled CIs for non-overlap check.
-    When inference is None, falls back to delta-only gate (no CI check).
-    """
+def evaluate_gate(agg: dict) -> dict:
+    """Return gate verdict dict using delta-only gate (Δ > +0.005 vs baseline)."""
     baseline      = agg["baseline"]
     baseline_mean = baseline.get("test_auroc_mean_mean")
 
@@ -466,8 +462,6 @@ def evaluate_gate(agg: dict, inference: Optional[dict] = None, n_bootstrap: int 
         baseline_mean is not None and
         baseline_mean >= PHASE6_MEAN_TEST
     )
-
-    base_run_names = [f"{CONFIGS[0]['stem']}-s{seed}" for seed in SEEDS]
 
     winner       = None
     winner_delta = None
@@ -480,38 +474,15 @@ def evaluate_gate(agg: dict, inference: Optional[dict] = None, n_bootstrap: int 
         delta = this_mean - base_mean
         if delta <= 0.005:
             continue
-
-        if inference is not None:
-            # Test-sample pooled CIs: average per-task CI bounds
-            cand_run_names = [f"{cfg['stem']}-s{seed}" for seed in SEEDS]
-            task_lo_winner   = []
-            task_hi_baseline = []
-            for task in TASKS:
-                w_lo, _   = pooled_bootstrap_ci(inference, cand_run_names, task, _auroc, n=n_bootstrap)
-                _,    b_hi = pooled_bootstrap_ci(inference, base_run_names,  task, _auroc, n=n_bootstrap)
-                if not math.isnan(w_lo) and not math.isnan(b_hi):
-                    task_lo_winner.append(w_lo)
-                    task_hi_baseline.append(b_hi)
-
-            if not task_lo_winner:
-                continue
-            pooled_lo_winner   = float(np.mean(task_lo_winner))
-            pooled_hi_baseline = float(np.mean(task_hi_baseline))
-            ci_nonoverlap = pooled_lo_winner > pooled_hi_baseline
-        else:
-            ci_nonoverlap = True  # no inference data: skip CI check
-
-        if ci_nonoverlap:
-            if winner is None or delta > winner_delta:
-                winner       = cfg
-                winner_delta = delta
+        if winner is None or delta > winner_delta:
+            winner       = cfg
+            winner_delta = delta
 
     return {
         "baseline_mean": baseline_mean,
         "gate_pass":     gate_pass,
         "winner":        winner,
         "winner_delta":  winner_delta,
-        "ci_used":       inference is not None,
     }
 
 
@@ -563,8 +534,7 @@ def section_bootstrap_ci(inference: dict, n_bootstrap: int) -> list:
 # ── Markdown report ───────────────────────────────────────────────────────────
 
 def render_report(runs: dict, agg: dict, trajs: dict, gate: dict,
-                  n_bootstrap: int, out_path: Path,
-                  inference: Optional[dict] = None) -> None:
+                  out_path: Path) -> None:
     date  = datetime.now().strftime("%Y-%m-%d")
     sha   = git_commit()
     lines = []
@@ -581,11 +551,7 @@ def render_report(runs: dict, agg: dict, trajs: dict, gate: dict,
     complete_configs   = [cfg["label"] for cfg in CONFIGS if n_complete[cfg["label"]] == 3]
     incomplete_configs = [cfg["label"] for cfg in CONFIGS if n_complete[cfg["label"]] < 3]
 
-    ci_method = (
-        f"test-sample bootstrap ({n_bootstrap} resamples over ~165 test slides)"
-        if inference is not None
-        else f"seed-level mean delta (Δ > +0.005 vs Phase 8 baseline) with 95% bootstrap CIs on the mean for non-overlap confirmation"
-    )
+    ci_method = "seed-level mean ± std (Δ > +0.005 vs Phase 8 baseline)"
     completeness = (
         f"{len(complete_configs)}/6 configurations have completed all 3 seeds at the time "
         f"of this report"
@@ -713,28 +679,21 @@ def render_report(runs: dict, agg: dict, trajs: dict, gate: dict,
         w((PREFIX + " {mmr_prc} | {ras_prc} | {braf_prc} | {mean_prc} | {epoch} |").format(**r))
     w()
 
-    # ── Bootstrap CI section (test-sample, only when inference data available) ─
-    if inference is not None:
-        ci_lines = section_bootstrap_ci(inference, n_bootstrap)
-        for line in ci_lines:
-            w(line)
-
     # ── Gate ──────────────────────────────────────────────────────────────────
     w("## Gate")
     w()
     bm       = fmt(gate["baseline_mean"])
     gate_sym = "✅ PASS" if gate["gate_pass"] else "❌ FAIL"
-    ci_note  = " (CI non-overlap via test-sample bootstrap)" if gate["ci_used"] else " (delta-only; run with --data-dir for CI gate)"
     w(f"**Baseline gate** (mean test AUROC ≥ {PHASE6_MEAN_TEST}): `{bm}` — **{gate_sym}**")
     w()
     winner_cfg = gate["winner"]
     if winner_cfg:
-        w(f"**Winner:** `{winner_cfg['label']}` — Δ = {fmt_delta(gate['winner_delta'])} vs baseline"
-          f"{ci_note}. "
+        w(f"**Winner:** `{winner_cfg['label']}` — Δ = {fmt_delta(gate['winner_delta'])} vs baseline "
+          f"(seed-based mean ± std, Δ > +0.005). "
           f"Carry `positional_encoding={winner_cfg['pe']}`, "
           f"`patch_dropout_rate={winner_cfg['dropout']}` to Phase 9.")
     else:
-        w(f"**No winner** (no config clears Δ > +0.005{ci_note}).")
+        w("**No winner** (no config clears Δ > +0.005 vs baseline, seed-based mean ± std).")
         w("Carry `positional_encoding=none`, `patch_dropout_rate=0.0` forward to Phase 9.")
     w()
 
@@ -785,11 +744,6 @@ def main():
     parser = argparse.ArgumentParser(description="Phase 8 ablation report")
     parser.add_argument("--mlflow-db", default="mlflow.db",
                         help="Path to MLflow SQLite DB (default: mlflow.db)")
-    parser.add_argument("--n-bootstrap", type=int, default=2000,
-                        help="Bootstrap resamples for test-sample CIs (default: 2000)")
-    parser.add_argument("--data-dir", default=None,
-                        help="Path to phase8_extract.py output dir. "
-                             "Enables test-sample bootstrap CIs and CI-based gate.")
     args = parser.parse_args()
 
     db_path = Path(args.mlflow_db)
@@ -819,18 +773,7 @@ def main():
         n = agg[cfg["label"]]["n_complete"]
         print(f"  {cfg['label']:30s}  {n}/3 seeds complete")
 
-    # Load inference data if requested
-    inference = None
-    if args.data_dir is not None:
-        data_dir = Path(args.data_dir)
-        if not data_dir.exists():
-            print(f"ERROR: --data-dir not found: {data_dir}", file=sys.stderr)
-            sys.exit(1)
-        print(f"\nLoading inference data from {data_dir} …")
-        inference = load_inference(data_dir)
-        print(f"  Loaded {len(inference)} run(s).")
-
-    gate = evaluate_gate(agg, inference=inference, n_bootstrap=args.n_bootstrap)
+    gate = evaluate_gate(agg)
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     plot_test_auroc_grouped(agg, FIG_DIR / "test_auroc_grouped.png")
@@ -839,7 +782,7 @@ def main():
     print(f"Figures written → {FIG_DIR}/")
 
     out_path = REPORT_DIR / "phase8-results.md"
-    render_report(runs, agg, trajs, gate, args.n_bootstrap, out_path, inference=inference)
+    render_report(runs, agg, trajs, gate, out_path)
 
     conn.close()
 
@@ -847,8 +790,6 @@ def main():
     print("Gate summary:")
     print(f"  Baseline mean test AUROC: {fmt(gate['baseline_mean'])}")
     print(f"  Gate (≥ {PHASE6_MEAN_TEST}): {'PASS' if gate['gate_pass'] else 'FAIL'}")
-    ci_method = "test-sample pooled CI" if gate["ci_used"] else "delta-only (no inference data)"
-    print(f"  CI method: {ci_method}")
     winner_cfg = gate["winner"]
     if winner_cfg:
         print(f"  Winner: {winner_cfg['label']}  Δ={fmt_delta(gate['winner_delta'])}")

@@ -154,26 +154,24 @@ def _get_prob(model, emb_np, device, is_multitask):
 def run_deletion(features_np, scores, k_levels, model, device, is_mt):
     N = features_np.shape[0]
     rank_desc = np.argsort(scores)[::-1]
+    keep_mask = np.ones(N, dtype=bool)
     probs = []
     for k in k_levels:
         n_remove = int(k * N)
-        bag = features_np.copy()
-        if n_remove > 0:
-            bag[rank_desc[:n_remove]] = 0.0
+        keep_mask[:] = True
+        keep_mask[rank_desc[:n_remove]] = False
+        bag = features_np[keep_mask]  # physically shrink the bag
         probs.append(_get_prob(model, bag, device, is_mt))
     return np.array(probs, dtype=np.float32)
 
 
 def run_insertion(features_np, scores, k_levels, model, device, is_mt):
     N = features_np.shape[0]
-    mean_emb = features_np.mean(axis=0)  # (1024,)
     rank_desc = np.argsort(scores)[::-1]
     probs = []
     for k in k_levels:
-        n_insert = int(k * N)
-        bag = np.tile(mean_emb, (N, 1))  # (N, 1024) mean baseline
-        if n_insert > 0:
-            bag[rank_desc[:n_insert]] = features_np[rank_desc[:n_insert]]
+        n_insert = max(1, int(k * N))  # at k=0 use 1 real patch
+        bag = features_np[rank_desc[:n_insert]]
         probs.append(_get_prob(model, bag, device, is_mt))
     return np.array(probs, dtype=np.float32)
 

@@ -1,6 +1,6 @@
-# Phase 8 backfill — training stability baseline (50-epoch, no early stopping)
+# Phase 8 backfill — training stability baseline (100-epoch, no early stopping)
 # Cloned from configs/studies/config_surgen_none.yaml
-# Changes: epochs 25→50, early_stopping_patience 10→0 (disabled), run_name updated
+# Changes: epochs 25→100, lr 1e-5→1e-4, early_stopping_patience 10→0 (disabled), run_name updated
 
 paths:
   embeddings_dir: "/mnt/data-surgen/embeddings/"
@@ -30,9 +30,9 @@ model:
   aggregation: "mean"
 
 training:
-  epochs: 50
+  epochs: 100
   early_stopping_patience: 0
-  lr: 1.0e-5
+  lr: 1.0e-4
   batch_size: 1
   optimizer: "adam"
   random_seed: 1

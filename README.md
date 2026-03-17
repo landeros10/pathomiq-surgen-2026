@@ -1,20 +1,23 @@
-# SurGen — MMR/MSI Prediction from Whole-Slide Images
+# SurGen — Multitask Molecular Marker Prediction from Whole-Slide Images
 
-Transformer-based Multiple Instance Learning (MIL) for predicting mismatch-repair (MMR) / microsatellite instability (MSI) status from colorectal cancer whole-slide image embeddings.
+Multiple Instance Learning for joint prediction of MMR/MSI, RAS, and BRAF status from colorectal cancer whole-slide image embeddings (UNI foundation model), with ABMIL and MLP-RPB aggregation variants.
 
 ## Structure
 
 ```
 surgen/
-├── configs/            # training configs
-├── data/splits/        # train/val/test CSV splits
+├── configs/                   # training configs (singletask + multitask)
+├── data/splits/               # train/val/test CSV splits
 ├── scripts/
 │   ├── train.py
 │   ├── evaluate.py
-│   ├── etl/            # dataset, splits, synthetic data
-│   ├── models/         # MIL Transformer
-│   └── utils/          # metrics, MLflow helpers
-├── tests/              # unit + integration tests
+│   ├── etl/                   # dataset, splits, synthetic data
+│   ├── models/                # MIL Transformer, ABMIL, MLP-RPB layers
+│   ├── eval/                  # inference, interpretability, performance
+│   └── utils/                 # metrics, MLflow helpers
+├── tests/                     # unit + integration tests
+├── report/figures/            # figures for report.md
+├── report.md                  # full project write-up
 └── requirements.txt
 ```
 
@@ -27,6 +30,10 @@ pip install -r requirements.txt
 ## Quick test (no real data required)
 
 ```bash
-python scripts/etl/synthetic.py --config configs/config_gate_test.yaml
-python scripts/train.py --config configs/config_gate_test.yaml
+python scripts/etl/synthetic.py
+python scripts/train.py --config configs/config_singletask_mmr_baseline.yaml
 ```
+
+## Report
+
+See `report.md` for the full methodology, experiments, and results write-up.

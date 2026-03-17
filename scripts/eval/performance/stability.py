@@ -671,15 +671,3 @@ def build_round2_conclusions(
     lines.append("")
     lines.append("*(Δ = R2 − R1; negative vl_rise delta = less overfitting)*")
     return "\n".join(lines) + "\n"
-
-
-# ── Main (delegates to studies/stability_ablation.py logic) ───────────────────
-
-def main() -> None:
-    """Run the stability ablation report. Delegates to stability_ablation.main()."""
-    import sys
-    from pathlib import Path
-    ROOT = Path(__file__).resolve().parents[3]
-    sys.path.insert(0, str(ROOT / "scripts" / "studies"))
-    from stability_ablation import main as _main  # noqa: F401
-    _main()

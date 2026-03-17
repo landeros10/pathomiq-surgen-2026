@@ -5,6 +5,7 @@ Pure function library. No __main__ block. Imported by
 scripts/studies/phase8_ablation.py which provides the CLI entry point.
 """
 
+import json
 import math
 import sqlite3
 import subprocess
@@ -742,30 +743,25 @@ def render_report(runs: dict, agg: dict, trajs: dict, gate: dict,
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Phase 8 ablation report")
-    parser.add_argument("--mlflow-db", default="mlflow.db",
-                        help="Path to MLflow SQLite DB (default: mlflow.db)")
+    parser.add_argument("--data-dir", default="reports/data/phase8/",
+                        help="Path to extracted phase8 data (default: reports/data/phase8/)")
     args = parser.parse_args()
 
-    db_path = Path(args.mlflow_db)
-    if not db_path.exists():
-        print(f"ERROR: mlflow.db not found at {db_path}. "
-              f"Run from project root or pass --mlflow-db.", file=sys.stderr)
-        sys.exit(1)
+    data_dir  = Path(args.data_dir)
+    runs_path = data_dir / "runs.json"
+    trajs_path = data_dir / "trajectories.json"
 
-    conn = sqlite3.connect(db_path)
+    for p in [runs_path, trajs_path]:
+        if not p.exists():
+            print(f"ERROR: {p} not found. Run phase8_extract.py first.", file=sys.stderr)
+            sys.exit(1)
 
-    exp_id = get_experiment_id(conn, EXPERIMENT)
-    if exp_id is None:
-        print(f"ERROR: experiment '{EXPERIMENT}' not found in {db_path}.", file=sys.stderr)
-        sys.exit(1)
+    runs  = json.loads(runs_path.read_text())
+    trajs = json.loads(trajs_path.read_text())
 
-    runs = load_runs(conn, exp_id)
-    print(f"Found {len(runs)} FINISHED non-preflight runs in '{EXPERIMENT}'.")
-    if runs:
-        print("  " + ", ".join(sorted(runs.keys())))
+    print(f"Found {len(runs)} runs in {runs_path}")
+    print("  " + ", ".join(sorted(runs.keys())))
     print()
-
-    trajs = load_trajectories(conn, runs)
 
     agg = {}
     for cfg in CONFIGS:
@@ -783,8 +779,6 @@ def main():
 
     out_path = REPORT_DIR / "phase8-results.md"
     render_report(runs, agg, trajs, gate, out_path)
-
-    conn.close()
 
     print()
     print("Gate summary:")

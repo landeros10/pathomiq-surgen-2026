@@ -1,6 +1,6 @@
 # SurGen — Multitask Molecular Marker Prediction from Whole-Slide Images
 
-Multiple Instance Learning for joint prediction of MMR/MSI, RAS, and BRAF status from colorectal cancer whole-slide image embeddings (UNI foundation model), with ABMIL and MLP-RPB aggregation variants.
+Multiple Instance Learning for joint prediction of MMR/MSI, RAS, and BRAF status from colorectal cancer whole-slide image embeddings (UNI foundation model), with ABMIL aggregation and an MLP-RPB spatial position bias extension.
 
 ## Abstract
 

@@ -222,3 +222,24 @@ Simultaneous prediction of MMR, RAS, and BRAF status from a single H&E slide cou
 The primary constraint on clinical translation remains dataset scope, with a single institution and a 165-slide test partition. As training datasets expand, methods for structured clinical review of model behavior must be developed in parallel with predictive performance. Attribution analysis offers one such approach, and the deletion, insertion, and spatial concordance analyses presented here demonstrate that it can surface failure modes such as the RAS head's inability to resolve a task-specific attribution pattern. Formalizing attribution review, perhaps through curated reference sets, would allow prototype models to be evaluated against clinical expectations as a routine part of the development cycle. Building this kind of attribution validation tooling could be one area of future work at Pathomiq.
 
 ---
+
+## 6. References
+Myles, C., Um, I.H., Marshall, C., Harris-Birtill, D., & Harrison, D.J. (2025). SurGen: 1020 H&E-stained whole-slide images with survival and genetic markers. GigaScience, 14, giaf086
+
+Chen, R.J., Ding, T., Lu, M.Y., Williamson, D.F.K., Jaume, G., Song, A.H., Chen, B., Zhang, A., Shao, D., Shaban, M., Williams, M., Oldenburg, L., Weishaupt, L.L., Wang, J.J., Vaidya, A., Le, L.P., Gerber, G., Sahai, S., Williams, W., & Mahmood, F. (2024). Towards a general-purpose foundation model for computational pathology. Nature Medicine, 30(3), 850–862
+
+Oquab, M., Darcet, T., Moutakanni, T., Vo, H., Szafraniec, M., Khalidov, V., Fernandez, P., Haziza, D., Massa, F., El-Nouby, A., et al. (2023). DINOv2: Learning robust visual features without supervision. arXiv preprint arXiv:2304.07193
+
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., Kaiser, Ł., & Polosukhin, I. (2017). Attention is all you need. In Advances in Neural Information Processing Systems 30 (NeurIPS 2017), pp. 5998–6008
+
+Ilse, M., Tomczak, J.M., & Welling, M. (2018). Attention-based deep multiple instance learning. In Proceedings of the 35th International Conference on Machine Learning (ICML), PMLR 80, pp. 2132–2141
+
+Zaharia, M., Chen, A., Davidson, A., Ghodsi, A., Hong, S.A., Konwinski, A., Murching, S., Nykodym, T., Ogilvie, P., Parkhe, M., Xie, F., & Zumar, C. (2018). Accelerating the machine learning lifecycle with MLflow. IEEE Data Engineering Bulletin, 41(4), 39–45.
+
+Hense, J.*, Jamshidi Idaji, M.*, Eberle, O., Schnake, T., Dippel, J., Ciernik, L., Buchstab, O., Mock, A., Klauschen, F., & Müller, K.-R. (2024). xMIL: Insightful explanations for multiple instance learning in histopathology. In Advances in Neural Information Processing Systems 37 (NeurIPS 2024), pp. 8300–8328
+
+Baehrens, D., Schroeter, T., Harmeling, S., Kawanabe, M., Hansen, K., & Müller, K.-R. (2010). How to explain individual classification decisions. Journal of Machine Learning Research, 11, 1803–1831
+
+Jain, S. & Wallace, B.C. (2019). Attention is not explanation. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics (NAACL 2019). arXiv:1902.10186
+
+Idaji, Mina Jamshidi, et al. "Beyond Attention Heatmaps: How to Get Better Explanations for Multiple Instance Learning Models in Histopathology." arXiv preprint arXiv:2603.08328 (2026).

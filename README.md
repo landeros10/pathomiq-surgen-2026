@@ -44,4 +44,4 @@ python scripts/train.py --config configs/config_singletask_mmr_baseline.yaml
 
 ## Report
 
-See `report.md` for the full methodology, experiments, and results write-up.
+See [`report.md`](report.md) or [`report.pdf`](report.pdf) for the full methodology, experiments, and results write-up.

@@ -1,14 +1,27 @@
 """Gradient attribution functions — Phase 7 Step 2.
 
 Computes per-patch GradNorm (||∇||₂) and InputXGrad (||∇⊙emb||₂) attribution.
-Requires GCP model inference. SSH orchestration uses utils/gcp_utils.py.
 """
 
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
+
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts"))
+
+
+def _extract_logit(out, task_idx: int):
+    """Extract scalar logit from model output (handles ST and MT output shapes)."""
+    if isinstance(out, tuple):
+        out = out[0]
+    if out.ndim == 0:
+        return out
+    if out.ndim == 1:
+        return out[0]
+    return out[0, task_idx]
 
 
 def compute_gradnorm(
@@ -28,10 +41,14 @@ def compute_gradnorm(
     Returns:
         np.ndarray of shape (N,) — per-patch GradNorm scores.
     """
-    raise NotImplementedError(
-        "compute_gradnorm() requires model inference on GCP. "
-        "Run phase7_attribution.py on the GCP server."
-    )
+    device = next(model.parameters()).device
+    emb_np = embeddings.numpy() if hasattr(embeddings, "numpy") else np.asarray(embeddings)
+    emb_leaf = torch.tensor(emb_np, dtype=torch.float32, device=device, requires_grad=True)
+    out = model(emb_leaf.unsqueeze(0))
+    logit = _extract_logit(out, task_idx)
+    logit.backward()
+    grad = emb_leaf.grad.detach().cpu().numpy()  # (N, D)
+    return np.linalg.norm(grad, axis=1).astype(np.float32)
 
 
 def compute_input_x_grad(
@@ -51,10 +68,15 @@ def compute_input_x_grad(
     Returns:
         np.ndarray of shape (N,) — per-patch IxG scores.
     """
-    raise NotImplementedError(
-        "compute_input_x_grad() requires model inference on GCP. "
-        "Run phase7_attribution.py on the GCP server."
-    )
+    device = next(model.parameters()).device
+    emb_np = embeddings.numpy() if hasattr(embeddings, "numpy") else np.asarray(embeddings)
+    emb_leaf = torch.tensor(emb_np, dtype=torch.float32, device=device, requires_grad=True)
+    out = model(emb_leaf.unsqueeze(0))
+    logit = _extract_logit(out, task_idx)
+    logit.backward()
+    grad    = emb_leaf.grad.detach().cpu().numpy()  # (N, D)
+    emb_val = emb_leaf.detach().cpu().numpy()        # (N, D)
+    return np.linalg.norm(grad * emb_val, axis=1).astype(np.float32)
 
 
 def compute_spearman_correlation(attn_weights, gradnorm_scores) -> dict:

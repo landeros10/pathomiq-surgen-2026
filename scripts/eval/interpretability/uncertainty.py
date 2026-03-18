@@ -1,10 +1,13 @@
-"""MC Dropout uncertainty functions — Phase 7 Step 3.
+"""MC Dropout uncertainty functions — Phase 8.
 
 T=50 stochastic forward passes with dropout p=0.15 (transformer in .train() mode).
-Requires GCP model inference. SSH orchestration uses utils/gcp_utils.py.
+Handles both single-task (1D) and multi-task (2D) logit output from MultiMILTransformer.
 """
 
 from pathlib import Path
+
+import numpy as np
+import torch
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -18,11 +21,15 @@ def run_mc_dropout(
 ):
     """Run MC Dropout uncertainty estimation for one slide.
 
+    Puts the model in .train() mode to activate dropout stochasticity, then runs
+    n_passes stochastic forward passes under torch.no_grad(). Handles tuple output
+    (logits, weights) from multi-task models, and both 1D/2D logit tensors.
+
     Args:
         model:        Loaded MultiMILTransformer.
-        embeddings:   (N, D) float tensor of patch embeddings.
+        embeddings:   (N, D) float array or tensor of patch embeddings.
         n_passes:     Number of stochastic forward passes.
-        dropout_rate: Dropout probability (model put in .train() mode).
+        dropout_rate: Dropout probability (informational; model must already be configured).
         task_idx:     Which task head to use for output.
 
     Returns:
@@ -31,10 +38,30 @@ def run_mc_dropout(
             std_prob   : float — standard deviation across passes
             all_probs  : list[float] — per-pass probabilities
     """
-    raise NotImplementedError(
-        "run_mc_dropout() requires model inference on GCP. "
-        "Run phase7_mc_dropout.py on the GCP server."
-    )
+    device = next(model.parameters()).device
+    emb_np = embeddings.numpy() if hasattr(embeddings, "numpy") else np.asarray(embeddings)
+    emb = torch.tensor(emb_np, dtype=torch.float32, device=device).unsqueeze(0)  # (1, N, D)
+
+    model.train()  # activate dropout stochasticity — critical: NOT .eval()
+
+    all_probs = []
+    with torch.no_grad():
+        for _ in range(n_passes):
+            out = model(emb)
+            logits = out[0] if isinstance(out, tuple) else out
+            if logits.ndim == 2:
+                task_logits = logits[0]      # (B, T) → (T,)
+            elif logits.ndim == 1:
+                task_logits = logits         # (T,) or scalar-wrapped
+            else:
+                task_logits = logits.unsqueeze(0)
+            all_probs.append(float(torch.sigmoid(task_logits[task_idx]).item()))
+
+    return {
+        "mean_prob": float(np.mean(all_probs)),
+        "std_prob":  float(np.std(all_probs)),
+        "all_probs": all_probs,
+    }
 
 
 def compute_ece(

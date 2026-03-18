@@ -111,14 +111,12 @@ class MILTransformer(nn.Module):
             return_weights=True. weights shape: (batch, N_patches, 1).
         """
         x = self.input_proj(x)   # (B, N, hidden_dim)
-        pos_enc = getattr(self, "pos_enc", None)
-        if pos_enc is not None and coords is not None:
-            x = x + pos_enc(coords)
+        if self.pos_enc is not None and coords is not None:
+            x = x + self.pos_enc(coords)
 
         rpb_mask = None
-        rpb = getattr(self, "rpb", None)
-        if rpb is not None and coords is not None:
-            rpb_mask = rpb(coords).to(x.dtype)   # cast for AMP
+        if self.rpb is not None and coords is not None:
+            rpb_mask = self.rpb(coords).to(x.dtype)   # cast for AMP
 
         x = self.transformer(x, mask=rpb_mask)  # (B, N, hidden_dim)
 
@@ -221,14 +219,12 @@ class MultiMILTransformer(nn.Module):
             when return_weights=True. weights shape: (batch, N_patches, output_classes).
         """
         x = self.input_proj(x)   # (B, N, hidden_dim)
-        pos_enc = getattr(self, "pos_enc", None)
-        if pos_enc is not None and coords is not None:
-            x = x + pos_enc(coords)
+        if self.pos_enc is not None and coords is not None:
+            x = x + self.pos_enc(coords)
 
         rpb_mask = None
-        rpb = getattr(self, "rpb", None)
-        if rpb is not None and coords is not None:
-            rpb_mask = rpb(coords).to(x.dtype)   # cast for AMP
+        if self.rpb is not None and coords is not None:
+            rpb_mask = self.rpb(coords).to(x.dtype)   # cast for AMP
 
         x = self.transformer(x, mask=rpb_mask)  # (B, N, hidden_dim)
 

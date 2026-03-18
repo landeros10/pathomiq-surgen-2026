@@ -131,7 +131,7 @@ Two patch-aggregation strategies were compared: the mean-pooling baseline and th
 | | BRAF | **0.848 ± 0.016** | 0.440 ± 0.018 |
 | | Mean | **0.784 ± 0.007** | **0.450 ± 0.003** |
 
-**Table 2. Multitask test performance.** Mean pooling (Phase 5 config re-run with 3 independent seeds) vs. ABMIL (Phase 8 baseline, no positional encoding). Both reported as mean ± std across 3 seeds.
+**Table 2. Multitask test performance.** Mean pooling (re-run with 3 independent seeds) vs. ABMIL (no positional encoding). Both reported as mean ± std across 3 seeds.
 
 Results indicate that ABMIL aggregation, which permits each task head to learn an independent patch weighting, improved both discriminative performance and training stability relative to mean pooling.
 
@@ -151,7 +151,7 @@ The preceding experiments treat each slide as an unordered bag of patches. We ne
 | | BRAF | 0.830±0.010 | 0.416±0.037 |
 | | Mean | 0.778±0.008 | 0.440±0.015 |
 
-**Table 3. Positional encoding ablation.** Mean ± std across 3 seeds. Phase 8 baseline is no-PE (first block).
+**Table 3. Positional encoding ablation.** Mean ± std across 3 seeds. The no-PE ABMIL model (first block) serves as the baseline.
 
 The addition of RPB did not improve overall performance, reducing mean test AUROC marginally from 0.784 to 0.778. The effect was not uniform across tasks: MMR AUROC increased slightly (0.852 to 0.858) with reduced inter-seed variance, while BRAF AUROC fell from 0.848 to 0.830. More investigation will be necessary to determine whether the MMR improvement reflects improved recognition of larger-scale structures. Given the absence of a clear overall gain, the baseline ABMIL model without positional encoding was carried forward to the interpretability analysis.
 
